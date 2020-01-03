@@ -1,0 +1,255 @@
+slouch
+
+
+TODO:
+- [ ] lexer errors
+- [ ] parser errors
+- [ ] figure out booleans
+- [x] string literals
+- [ ] rune literals
+- [x] builtin function calls
+- [ ] readline
+- [x] make tokens an enum
+- [x] clearer distinction between builtin and identifier (or unify them?)
+- [x] implement lambdas
+- [x] fix |sum|inc |= $foo
+- [ ] figure out lambdas vs builtins vs identifiers vs calls
+- [x] make fns take one arg
+	- [ ] think about this more. How should sum work? sum [1 2 3] or sum 1 2 3? sum $foo?
+- [x] should pipe be separate from infixop? (yes)
+- [ ] implement basic math
+- [ ] implement more builtins
+- [ ] implement |{
+- [ ] get simplest solutions working!
+- [ ] implement bigints
+
+* can pipes be parsed as prefix-lambdas always, rather than infix operators?
+	* x | inc | sum -> x supplied to lambda (inc | sum) which is itself a lambda (sum) called on the result of inc
+
+∑ ∫ λ
+
+
+
+
+GOALS:
+- optimize for write speed
+    - but also minimize mistakes!
+    - special forms are less typing, but harder to swap out/debug
+    - highly composable -- easy to extend an expression, split out parts of an expression, etc.
+- "do what I mean"
+- functional flavor, but not too strict
+- definitely needs a repl, for building up to a solution
+    - github.com/abiosoft/ishell
+- inspiration: https://betaveros.github.io/paradoc
+- make these things really easy:
+    - parsing (pattern matching)
+    - operations with Pos and Dir
+    - operations on grids
+        - should handle boundaries automatically
+    - exploring mazes (bfs, dfs)
+    - simulations (virtual machines, n-body, game of life)
+        - "stateful" VM with instruction pointer, opcodes, etc.
+        - cellular automata with next-step rules
+    - combinatorics (permutations, n choose k)
+    - detecting duplicates
+    - counting occurences
+    - find the input x to f that produces output y
+        * (requires ordered output)
+        - linear search from lower bound
+        - binary search with upper bound
+        - exponential search with no upper bound
+
+FLAVOR:
+- interpreted
+- everything is an expression
+- currying
+- lazy
+    - "Read"-like implementation
+        * instead of GetNextArrayValue -> int, ReadNextArrayValues -> []int
+- mostly stream processing, but also need statefulness sometimes
+    - no explicit loops means loops are in the interpreter -- much faster
+    - x | y z is just y z x
+- implicit $variables; dynamic typing
+    - inherit "methods" from earlier in the pipeline
+
+
+PLANNED:
+- bigints by default (with flag for speed)
+- lambdas are just | body |= $name
+    * easy to refactor an existing expr into a lambda
+        * provide key combos for refactoring
+    * kind of annoying in combination with |{ though -- need to accept both
+
+
+IDEAS:
+- repl is a "live view" of a file, for easier editing of multi-line code
+- modifying a var evaluates to that var
+- .0 instead of [0] -- easier to type
+- (x1, x2) | y z is y z x1 x2
+- inline Go (`strconv.Quote`)
+- if a call is missing an arg, that arg is $
+- automatically store last repl result in $some_magic_var
+    * hitting 'Up' isn't as good; it recomputes, and can only be used in one place
+    * maybe even a special key combo for "reassign $some_magic_var to $foo"
+    * $some_magic_var[0:4] references pipe sections 0 to 4, for splitting out a lambda
+    * maybe $some_magic_var == '...'?
+        * i.e., continuing the previous line
+        * ... |= $foo
+    * this is problematic if you're repeatedly editing the last line -- context changes
+- "tracing mode", printing every 1000 iterations or something
+    - print grid / maze / game of life
+    - watch for long-running processes, allow pause/resume
+    - catch stack overflows
+    - DON'T EXPLODE; should never have to restart the repl
+        - (maybe even recover() at top level!)
+    - show values flowing through pipeline, with artificial delay
+        - or live update as you type?
+- pipe into array means apply to each fn in array, producing array of results
+    - kinda like an inverse map?
+
+
+QUESTIONS:
+- whitespace-separated elems?
+    * can't; conflicts with whitespace-separated fn arguments :/
+    * use array constructor builtin instead?
+        * array 1 2 3
+- JIT compile to Go?
+    * would be substantially faster (can use optimized ply pipelines)
+    * would be substantially harder
+- how to handle lambdas with 'deep' args?
+    * e.g. $foo x = [1 2 3] | filter (< x) | sum
+- how to manage variadic functions called with implicit $?
+    * e.g. [1 2 3 ] | printf "foo" -- does this print "foo [1 2 3]", or just "foo"?
+    * maybe have to ban implicit $
+
+
+TOO CRAZY:
+- if an expression has an unbound single-char name, it's a lambda that takes those args (in alpha order)
+    - '2 * x / y' is 'fn(x, y) -> 2 * x / y' 
+
+
+
+examples:
+
+
+2015:
+
+day1:
+cat "day1_input.txt" |{ match '(':1 ')':-1 | scan + |= $floors
+$floors | last
+$floors | search -1
+
+or:
+cat "day1_input.txt" | occurences | $."(" - $.")"
+or:
+cat "day1_input.txt" | (count '(') - (count ')')
+
+day2:
+$dims = cat "day2_input.txt" | lines | parse "$lx$wx$h"
+$sides = $dims |{ [$l*$w, $w*$h, $h*$l]
+$sides |{ (2*(sum $) + (min $)) | sum
+$wrapping = $sides |{ sort | fold (+) 2 * ($.0 + $.1)
+$bow = $dims | sum [$l $w $h]
+$wrapping + $bow
+
+or:
+cat "day2_input.txt" | lines |{ (| ints | pairs | 2*sum + min) |}+
+
+
+
+
+
+2016:
+
+day1:
+$a = Agent [0,0] Up | .trace
+$move a str = match str
+    "R$d" -> a | .turnRight | .walk $d
+    "L$d" -> a | .turnLeft | .walk $d
+$trail = cat "day1_input.txt" | split ', ' | fold $move $ $a | .trail
+$trail | last | abs $.0 + abs $.1
+$trail | first (insert $seen)
+
+day2:
+$dirs = cat "day2_input.txt" | lines | map chars
+$keys = [[1 2 3]
+         [4 5 6]
+         [7 8 9]]
+$move p c = p | match c
+    'U' -> .up
+    'D' -> .down
+    'L' -> .left
+    'R' -> .right
+    | clamp $keys
+$code = map (fold (find 5 $keys) $move $) | map (get $ $keys)
+$dirs | $code
+$keys = [[    1    ]
+         [  2 3 4  ]
+         [5 6 7 8 9]
+         [  A B C  ]
+         [    D    ]]
+$dirs | $code
+
+
+2017:
+
+day1:
+$ds = cat "day1_input.txt" | digits
+$matchsum = filter $.0 == $.1 | get 0 | sum
+$ds | append $ds[0] | window 2 | $matchsum
+0..$ds | map [get $ $ds, get ($+len($ds)/2 % len($ds)) $ds] | $matchsum
+
+day2:
+$rows = cat "day2_input.txt" | lines | map ints
+$rows | map ($ | sort | (last $) - (first $)) | sum
+$rows |{ (| pairs | find ($.0 %? $.1) | $.1 / $.0) | sum
+
+
+2018:
+day1:
+$nums = cat "day1_input.txt" | ignore '+' | ints
+$nums | sum
+$nums | scan (+) | until (insert $seen) | length
+
+day2:
+$ids = cat "day2_input.txt" | lines
+$with n = $ids | map occurences | filter (has n) | length
+($with 2) * ($with 3)
+$diff a b = 0..$a | filter ($a[$] != $b[$]) | map ($a[$])
+$ids | pairs | first ($diff $.0 $.1 | length | == 1) | ignore ($diff $.0 $.1) $.0
+
+or:
+$ids = cat "day2_input.txt" | lines
+$with n = $ids |{ occurences |> has n | length
+[2 3] |{ $with |}*
+
+
+2019:
+
+day1:
+$nums = cat "day1_input.txt" | ints
+$nums | map ($ / 3) - 2 | sum
+$mass x = let m = (x/3 - 2) in m > 0 ? m + $mass m : 0
+$nums | map $mass | sum
+
+or:
+cat "day1_input.txt" | ints |= $nums
+$nums |{ $/3 - 2 |}+
+| iterate ($/3 - 2) | until (< 0) }+ |= $mass
+$nums |{ $mass |}+
+
+day2:
+$prog = cat "day2_input.txt" | ints
+$prog.1 = 12
+$prog.2 = 2
+0..$prog | window 4 | until $.0 == 99 | match $.0
+    1 -> $prog.($.3) = $prog.($.1) + $prog.($.2)
+    2 -> $prog.($.3) = $prog.($.1) + $prog.($.2)
+$prog | get 0
+
+
+maxwater problem:
+O(n^2):
+cat "input.txt" | ints | indexed | pairs |{ ($.1.0 - $.0.0) * min($.1.1, $.0.1) | max
+Meet-in-middle:
+start at 0 and n; on each iter, inc 0 or dec n; take max
