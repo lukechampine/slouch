@@ -2,29 +2,15 @@ slouch
 
 
 TODO:
-- [ ] lexer errors
-- [ ] parser errors
-- [ ] figure out booleans
-- [x] string literals
-- [ ] rune literals
-- [x] builtin function calls
+- [ ] rewrite everything
 - [ ] readline
-- [x] make tokens an enum
-- [x] clearer distinction between builtin and identifier (or unify them?)
-- [x] implement lambdas
-- [x] fix |sum|inc |= $foo
-- [ ] figure out lambdas vs builtins vs identifiers vs calls
-- [x] make fns take one arg
-	- [ ] think about this more. How should sum work? sum [1 2 3] or sum 1 2 3? sum $foo?
-- [x] should pipe be separate from infixop? (yes)
+    - [ ] autocomplete!
+	* hoogle-style: suggest fns based on what types are on the stack!!
 - [ ] implement basic math
 - [ ] implement more builtins
-- [ ] implement |{
+- [ ] conditionals
 - [ ] get simplest solutions working!
 - [ ] implement bigints
-
-* can pipes be parsed as prefix-lambdas always, rather than infix operators?
-	* x | inc | sum -> x supplied to lambda (inc | sum) which is itself a lambda (sum) called on the result of inc
 
 ∑ ∫ λ
 
@@ -60,6 +46,7 @@ GOALS:
         - exponential search with no upper bound
 
 FLAVOR:
+- stack-based / concatenative
 - interpreted
 - everything is an expression
 - currying
@@ -68,81 +55,63 @@ FLAVOR:
         * instead of GetNextArrayValue -> int, ReadNextArrayValues -> []int
 - mostly stream processing, but also need statefulness sometimes
     - no explicit loops means loops are in the interpreter -- much faster
-    - x | y z is just y z x
-- implicit $variables; dynamic typing
-    - inherit "methods" from earlier in the pipeline
 
 
 PLANNED:
 - bigints by default (with flag for speed)
-- lambdas are just | body |= $name
-    * easy to refactor an existing expr into a lambda
-        * provide key combos for refactoring
-    * kind of annoying in combination with |{ though -- need to accept both
+    - but some problems are modulo 2^32 or 2^64; maybe set a global integer mode?
+- _ as "hole" in lambda (don't need _1 _2 _3; just fill with successive stack vals)
 
 
 IDEAS:
+- separate terminal for output preview; no need for fancy termui
+- hotkeys for previewing map/fold: start at 1 element, then increase or decrease
+- need a timeout mechanism; insert timer checks at regular intervals?
+    * seems hard to avoid getting stuck in a tight loop with no timer checks
+- need a way to experiment with transformations before applying them
+    * i.e. test out a sequence of actions on a single array element, then map to all of them 
+    - key combo to save current stack and restore it with another key
 - repl is a "live view" of a file, for easier editing of multi-line code
-- modifying a var evaluates to that var
-- .0 instead of [0] -- easier to type
-- (x1, x2) | y z is y z x1 x2
 - inline Go (`strconv.Quote`)
-- if a call is missing an arg, that arg is $
-- automatically store last repl result in $some_magic_var
-    * hitting 'Up' isn't as good; it recomputes, and can only be used in one place
-    * maybe even a special key combo for "reassign $some_magic_var to $foo"
-    * $some_magic_var[0:4] references pipe sections 0 to 4, for splitting out a lambda
-    * maybe $some_magic_var == '...'?
-        * i.e., continuing the previous line
-        * ... |= $foo
-    * this is problematic if you're repeatedly editing the last line -- context changes
+- kwargs: remove mental overhead of argument order
+    * would need autocomplete anyway, though; might as well just show signature in REPL
 - "tracing mode", printing every 1000 iterations or something
     - print grid / maze / game of life
     - watch for long-running processes, allow pause/resume
     - catch stack overflows
     - DON'T EXPLODE; should never have to restart the repl
         - (maybe even recover() at top level!)
-    - show values flowing through pipeline, with artificial delay
-        - or live update as you type?
-- pipe into array means apply to each fn in array, producing array of results
-    - kinda like an inverse map?
-
+- number each prompt; allow jumping to any previous prompt
+    * (probably too much memory usage here, but maybe last 3 or something)
+    * allow referencing any stack value from any previous prompt
+	- key combo to display stack at prompt n
+- stack edit mode
 
 QUESTIONS:
-- whitespace-separated elems?
-    * can't; conflicts with whitespace-separated fn arguments :/
-    * use array constructor builtin instead?
-        * array 1 2 3
-- JIT compile to Go?
-    * would be substantially faster (can use optimized ply pipelines)
-    * would be substantially harder
-- how to handle lambdas with 'deep' args?
-    * e.g. $foo x = [1 2 3] | filter (< x) | sum
-- how to manage variadic functions called with implicit $?
-    * e.g. [1 2 3 ] | printf "foo" -- does this print "foo [1 2 3]", or just "foo"?
-    * maybe have to ban implicit $
+
 
 
 TOO CRAZY:
-- if an expression has an unbound single-char name, it's a lambda that takes those args (in alpha order)
-    - '2 * x / y' is 'fn(x, y) -> 2 * x / y' 
 
 
 
 examples:
+http://www.maurits.vdschee.nl/scatterplot/
 
 
 2015:
 
 day1:
-cat "day1_input.txt" |{ match '(':1 ')':-1 | scan + |= $floors
-$floors | last
-$floors | search -1
+"inputs/2015/day01a" slurp chars ["(" 1 ")" -1] match (+) scan1 [(-1 at) (-1 find)] apply 
 
 or:
-cat "day1_input.txt" | occurences | $."(" - $.")"
+
+["(" ")"] "day1_input.txt" readFile count map unquote -
+"day1_input.txt" readFile [ ["(" 1 ")" -1] match ] map [+] scan -1 find
+
 or:
-cat "day1_input.txt" | (count '(') - (count ')')
+
+"day1_input.txt" readFile { ["(" count] [")" count] } cleave -
 
 day2:
 $dims = cat "day2_input.txt" | lines | parse "$lx$wx$h"
@@ -253,3 +222,145 @@ O(n^2):
 cat "input.txt" | ints | indexed | pairs |{ ($.1.0 - $.0.0) * min($.1.1, $.0.1) | max
 Meet-in-middle:
 start at 0 and n; on each iter, inc 0 or dec n; take max
+
+
+
+2015:
+
+day 1:
+match ["(": 1, ")": -1]
+sum
+# part 2
+scan (+)
+find (-1)
+
+day 2:
+lines                       ["3x11x24", "13x5x19", ...]
+map ints                    [[3,11,24], [13,5,19], ...]
+map {
+    choose 2                [[3,11], [11,24], ...]
+    map prod                [33, 264, ...]
+    sort                    [33, 264, ...]
+    prepend (head _)        [33, 33, ...]
+    map (*2)                [66, 66, ...]
+    sum                     132
+}
+sum
+
+day 3:
+dirs = matchdirs "^v<>"
+fn = {
+    a = actor(trace: true)
+    a.move dirs
+    uniq a.path
+    len
+}
+fn dirs
+fn (nth 2 dirs) + fn (nth 2 (drop 1 dirs))
+
+
+day 4:
+first ({
+    prepend input
+    @crypto/md5.Sum
+    hex
+    take 5
+    (==) "00000"
+}) iota
+
+day 5:
+lines
+count (c3v && cr2 && !cban)
+c3v = {
+    count (containsany "aeiou")
+    (>=) 3
+}
+cr2 = {
+    runs
+    any {len == 2}
+}
+cban = {
+    containsany ["ab", "cd", "pq", "xy"]
+}
+cp2 = {
+    x = _
+    window 2
+    map (occurences x)
+    any (>= 2)
+}
+clb = {
+    window 3
+    any (head == last)
+}
+
+day 6:
+g = boolgrid
+fold g {
+    r := (rect (ints _))
+    switch [
+        (contains "on"): {
+            g.true r
+        },
+        (contains "off"): {
+            g.false r
+        }
+        (contains "toggle"): {
+            g.toggle r
+        }
+    ]
+}
+count id
+# part 2
+g = intgrid
+fold g {
+    r := (rect (ints _))
+    switch [
+        (contains "on"): {
+            g.inc r
+        },
+        (contains "off"): {
+            g.dec r
+            map (clampmin 0) g
+        }
+        (contains "toggle"): {
+            g.inc r
+            g.inc r
+        }
+    ]
+}
+sum
+
+
+
+day 7:
+vars = {}
+asm [
+    "N -> V": (vars[V] = N)
+    "X AND Y -> Z": (vars[Z] = vars[X] & vars[Y])
+    "X OR Y -> Z": (vars[Z] = vars[X] | vars[Y])
+    "X LSHIFT N -> Z": (vars[Z] = vars[X] << N)
+    "X RSHIFT N -> Z": (vars[Z] = vars[X] >> N)
+    "NOT X -> Z": (vars[Z] = !vars[X])
+]
+runasm
+vars["a"]; print
+vars = {"b": vars["a"]}
+runasm
+vars["a"]; print
+
+
+day 9:
+lines
+map (parse "A to B = D")
+{shortestpath; print}
+{longestpath; print}
+
+
+day 10:
+runs("1113222113")
+iterate 40 {
+    map (x -> str(len(x)) + str(x[0]))
+    concat
+}
+len; print
+

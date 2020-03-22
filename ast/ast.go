@@ -18,14 +18,6 @@ type Expression interface {
 	Node
 }
 
-type Builtin struct {
-	Token token.Token // the IDENT token
-	Name  string
-}
-
-func (b Builtin) isNode()        {}
-func (b Builtin) String() string { return b.Name }
-
 type Identifier struct {
 	Token token.Token // the IDENT token
 	Name  string
@@ -34,95 +26,19 @@ type Identifier struct {
 func (i Identifier) isNode()        {}
 func (i Identifier) String() string { return i.Name }
 
-// e.g. foo 1 2 3
-type FunctionCall struct {
-	Token token.Token // the fn token
-	Fn    Expression
-	Args  []Expression
+// e.g. ( 1 2 3 )
+type Quotation struct {
+	Token token.Token
+	Body  []Expression
 }
 
-func (fc FunctionCall) isNode() {}
-func (fc FunctionCall) String() string {
-	strs := make([]string, 0, 1+len(fc.Args))
-	strs = append(strs, fc.Fn.String())
-	for _, a := range fc.Args {
-		strs = append(strs, a.String())
+func (q Quotation) isNode() {}
+func (q Quotation) String() string {
+	strs := make([]string, len(q.Body))
+	for i, t := range q.Body {
+		strs[i] = t.String()
 	}
-	return strings.Join(strs, " ")
-}
-
-// e.g. | sum
-type Lambda struct {
-	Token token.Token // the pipe token
-	Body  Expression
-}
-
-func (l Lambda) isNode() {}
-func (l Lambda) String() string {
-	return "| " + l.Body.String()
-}
-
-// e.g. -f(x)
-type PrefixOp struct {
-	Token    token.Token // The prefix token, e.g. !
-	Operator token.Kind
-	Right    Expression
-}
-
-func (pe PrefixOp) isNode() {}
-func (pe PrefixOp) String() string {
-	return string(pe.Operator) + pe.Right.String()
-}
-
-// e.g. foo * bar
-type InfixOp struct {
-	Token    token.Token // The operator token, e.g. |
-	Left     Expression
-	Operator token.Kind
-	Right    Expression
-}
-
-func (ie InfixOp) isNode() {}
-func (ie InfixOp) String() string {
-	return fmt.Sprintf("%v %v %v", ie.Left, ie.Operator, ie.Right)
-}
-
-// e.g. foo | bar
-type Pipe struct {
-	Token token.Token // The | token
-	Left  Expression
-	Right Expression
-}
-
-func (p Pipe) isNode() {}
-func (p Pipe) String() string {
-	return fmt.Sprintf("%v | %v", p.Left, p.Right)
-}
-
-// e.g. foo |= $bar
-type Assignment struct {
-	Token token.Token // The |= token
-	Var   Identifier
-	Value Expression
-}
-
-func (a Assignment) isNode() {}
-func (a Assignment) String() string {
-	return fmt.Sprintf("%v | %v", a.Value, a.Var)
-}
-
-// e.g. [a b c]
-type Array struct {
-	Elements []Expression
-}
-
-func (ae Array) isNode() {}
-func (ae Array) String() string {
-	strs := make([]string, len(ae.Elements))
-	for i := range strs {
-		strs[i] = ae.Elements[i].String()
-	}
-	return "[" + strings.Join(strs, " ") + "]"
+	return "( " + strings.Join(strs, " ") + " )"
 }
 
 // e.g. 123
@@ -177,59 +93,17 @@ func recPrint(b *strings.Builder, indent int, n Node) {
 		for _, e := range n.Expressions {
 			recPrint(b, indent+1, e)
 		}
-
-	case Array:
-		writeLine("ARRAY:")
-		for _, e := range n.Elements {
-			recPrint(b, indent+1, e)
-		}
-
 	case Integer:
 		writeLine("INTEGER: " + n.String())
-
 	case String:
 		writeLine("STRING: " + n.String())
-
 	case Identifier:
-		writeLine("IDENTIFIER:")
-		writeLine(n.String())
-
-	case Builtin:
-		writeLine("BUILTIN:")
-		writeLine(n.String())
-
-	case FunctionCall:
-		writeLine("CALL:")
-		recPrint(b, indent+1, n.Fn)
-		for _, e := range n.Args {
+		writeLine("IDENTIFIER: " + n.String())
+	case Quotation:
+		writeLine("QUOTATION:")
+		for _, e := range n.Body {
 			recPrint(b, indent+1, e)
 		}
-
-	case Lambda:
-		writeLine("LAMBDA:")
-		recPrint(b, indent+1, n.Body)
-
-	case PrefixOp:
-		writeLine("PREFIX:")
-		writeLine("  " + n.Operator.String())
-		recPrint(b, indent+1, n.Right)
-
-	case InfixOp:
-		writeLine("INFIX:")
-		recPrint(b, indent+1, n.Left)
-		writeLine("  " + n.Operator.String())
-		recPrint(b, indent+1, n.Right)
-
-	case Pipe:
-		writeLine("PIPE:")
-		recPrint(b, indent+1, n.Left)
-		recPrint(b, indent+1, n.Right)
-
-	case Assignment:
-		writeLine("ASSIGNMENT:")
-		recPrint(b, indent+1, n.Value)
-		recPrint(b, indent+1, n.Var)
-
 	default:
 		panic("unknown node type")
 	}

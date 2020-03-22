@@ -4,11 +4,14 @@ package evaluator
 import (
 	"fmt"
 	"io/ioutil"
+	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"lukechampine.com/slouch/ast"
-	"lukechampine.com/slouch/token"
+	"lukechampine.com/slouch/lexer"
+	"lukechampine.com/slouch/parser"
 )
 
 type Value interface {
@@ -43,13 +46,22 @@ func (av ArrayValue) String() string {
 	return "[" + strings.Join(strs, " ") + "]"
 }
 
-type LambdaValue struct {
-	body ast.Expression
+type ArraySentinel struct{}
+
+func (ArraySentinel) isValue()       {}
+func (ArraySentinel) String() string { return "[" }
+
+type QuotationValue struct {
+	body []ast.Expression
 }
 
-func (lv LambdaValue) isValue() {}
-func (lv LambdaValue) String() string {
-	return "| " + lv.body.String()
+func (qv QuotationValue) isValue() {}
+func (qv QuotationValue) String() string {
+	strs := make([]string, len(qv.body))
+	for i := range strs {
+		strs[i] = qv.body[i].String()
+	}
+	return "( " + strings.Join(strs, " ") + " )"
 }
 
 func equals(x, y Value) bool {
@@ -85,98 +97,495 @@ func equals(x, y Value) bool {
 	}
 }
 
-func Eval(n ast.Node) Value {
-	return New().Eval(n)
-}
+type envFn func(*Environment)
 
 type Environment struct {
-	vars map[string]Value
-	// TODO: may not need to be this generic; if fn args have fixed names ($1,
-	// $2, etc.) then we can just store those, not an arbitrary mapping
-	parent *Environment
+	Stack []Value
+	vars  map[string]envFn
 }
 
 func New() *Environment {
 	return &Environment{
-		vars: make(map[string]Value),
+		vars: make(map[string]envFn),
 	}
 }
 
-func (env *Environment) lookup(name string) (Value, bool) {
+func (env *Environment) lookup(name string) (envFn, bool) {
 	v, ok := env.vars[name]
-	if !ok && env.parent != nil {
-		return env.parent.lookup(name)
-	}
 	return v, ok
 }
 
-func (env *Environment) Eval(n ast.Expression) Value { return env.evalExpression(n) }
-
-func prependPipe(p ast.Expression, in ast.Expression) ast.Expression {
-	switch p := p.(type) {
-	case ast.Pipe:
-		p.Left = prependPipe(p.Left, in)
-		return p
-	case ast.FunctionCall:
-		p.Args = append(p.Args, in)
-		return p
-	default:
-		panic("can't prepend")
-	}
+func (env *Environment) Eval(n ast.Expression) {
+	env.computeEnvFn(n)(env)
 }
 
-func (env *Environment) evalFunctionCall(fc ast.FunctionCall) Value {
-	// TODO: fc.Fn = evaluate(fc.Fn)? For higher-order functions, I suppose
+func (env *Environment) pop() (v Value) {
+	v, env.Stack = env.Stack[len(env.Stack)-1], env.Stack[:len(env.Stack)-1]
+	return
+}
 
-	switch fn := fc.Fn.(type) {
+func (env *Environment) push(v Value) {
+	env.Stack = append(env.Stack, v)
+}
+
+func (env *Environment) computeEnvFn(n ast.Node) envFn {
+	pushFn := func(v Value) envFn { return func(e *Environment) { e.push(v) } }
+
+	switch n := n.(type) {
 	case ast.Identifier:
-		v, ok := env.lookup(fn.Name)
-		if !ok {
-			panic("unknown function " + fn.Name)
+		if fn, ok := env.vars[n.Name]; ok {
+			return fn
+		} else if fn, ok := builtins[n.Name]; ok {
+			return fn
 		}
-		switch v := v.(type) {
-		case LambdaValue:
-			var in ast.Expression = ast.Array{Elements: fc.Args}
-			if len(fc.Args) == 1 {
-				in = fc.Args[0]
-			}
-			return env.evalExpression(prependPipe(v.body, in))
-		default:
-			// "calling" a non-lambda simply returns the value
-			if len(fc.Args) != 0 {
-				panic("non-function call should not have any args")
-			}
-			return v
-		}
-	case ast.Builtin:
-		return map[string]func([]ast.Expression) Value{
-			"cat":   env.implCat,
-			"count": env.implCount,
-			"inc":   env.implInc,
-			"sum":   env.implSum,
-		}[fn.Name](fc.Args)
+		panic(fmt.Sprintf("unknown identifier"))
+
+	case ast.Integer:
+		i, _ := strconv.ParseInt(n.Value, 0, 64) // TODO: parse as bigint
+		return pushFn(IntegerValue{i})
+
+	case ast.String:
+		return pushFn(StringValue{n.Value})
+
+	case ast.Quotation:
+		return pushFn(QuotationValue{n.Body})
+
 	default:
-		fmt.Printf("%s %T\n", fn, fn)
-		panic("can't call non-identifiers")
+		panic(fmt.Sprintf("couldn't evaluate type %T", n))
 	}
 }
 
-func (env *Environment) implInc(args []ast.Expression) Value {
-	if len(args) != 1 {
-		panic("wrong number of args")
+// autocomplete
+func (env *Environment) Do(line []rune, pos int) (completions [][]rune, length int) {
+	// to type-check, we need to evaluate any preceeding expressions first, so
+	// save a copy that we can restore later
+	stack := append([]Value(nil), env.Stack...)
+	defer func() { env.Stack = stack }()
+
+	length = pos
+	s := string(line[:pos])
+	space := strings.LastIndexByte(s, ' ')
+	s = s[space+1:]
+	for b := range builtins {
+		if strings.HasPrefix(b, s) {
+			completions = append(completions, []rune(strings.TrimPrefix(b, s)))
+		}
 	}
-	iv, ok := env.evalExpression(args[0]).(IntegerValue)
+	sort.Slice(completions, func(i, j int) bool {
+		return string(completions[i]) < string(completions[j])
+	})
+	return
+}
+
+// sadly, must use init here to avoid cyclical references to Eval
+var builtins map[string]envFn
+
+func init() {
+	builtins = map[string]envFn{
+		"-":       builtinMinus,
+		"[":       builtinStartArray,
+		"]":       builtinEndArray,
+		"*":       builtinMultiply,
+		"/":       builtinDivide,
+		"+":       builtinPlus,
+		"apply":   builtinApply,
+		"array":   builtinArray,
+		"at":      builtinAt,
+		"chars":   builtinChars,
+		"count":   builtinCount,
+		"drop":    builtinDrop,
+		"dup":     builtinDup,
+		"eval":    builtinEval,
+		"eqn":     builtinEqn,
+		"find":    builtinFind,
+		"flatten": builtinFlatten,
+		"fold":    builtinFold,
+		"fold1":   builtinFold1,
+		"ints":    builtinInts,
+		"len":     builtinLen,
+		"map":     builtinMap,
+		"match":   builtinMatch,
+		"reverse": builtinReverse,
+		"slurp":   builtinSlurp,
+		"scan1":   builtinScan1,
+		"skip":    builtinSkip,
+		"splat":   builtinSplat,
+		"split":   builtinSplit,
+		"sort":    builtinSort,
+		"sum":     builtinSum,
+		"swap":    builtinSwap,
+		"take":    builtinTake,
+		"upto":    builtinUpto,
+		"with":    builtinWith,
+		"wrap":    builtinWrap,
+		"uniq":    builtinUniq,
+		"zip":     builtinZip,
+	}
+}
+
+func builtinDup(env *Environment) {
+	v := env.pop()
+	env.push(v)
+	env.push(v)
+}
+
+func builtinSwap(env *Environment) {
+	a := env.pop()
+	b := env.pop()
+	env.push(a)
+	env.push(b)
+}
+
+func builtinDrop(env *Environment) {
+	env.pop()
+}
+
+func builtinStartArray(env *Environment) {
+	env.push(ArraySentinel{})
+}
+
+func builtinEndArray(env *Environment) {
+	i := len(env.Stack) - 1
+	for ; i >= 0; i-- {
+		v := env.Stack[i]
+		if _, ok := v.(ArraySentinel); ok {
+			break
+		}
+	}
+	elems := append([]Value(nil), env.Stack[i+1:]...)
+	env.Stack = env.Stack[:i]
+	env.push(ArrayValue{elems})
+}
+
+func builtinApply(env *Environment) {
+	av, ok := env.pop().(ArrayValue)
 	if !ok {
-		panic("not an int")
+		panic("not an array")
 	}
-	return IntegerValue{iv.i + 1}
+	v := env.pop()
+	for _, qe := range av.elems {
+		q, ok := qe.(QuotationValue)
+		if !ok {
+			panic("not a quotation")
+		}
+		env.push(v)
+		for _, e := range q.body {
+			env.Eval(e)
+		}
+	}
 }
 
-func (env *Environment) implCat(args []ast.Expression) Value {
-	if len(args) != 1 {
-		panic("wrong number of args")
+func builtinArray(env *Environment) {
+	iv, ok := env.pop().(IntegerValue)
+	if !ok {
+		panic("not an integer")
 	}
-	sv, ok := env.evalExpression(args[0]).(StringValue)
+	i := len(env.Stack) - int(iv.i)
+	elems := append([]Value(nil), env.Stack[i:]...)
+	env.Stack = env.Stack[:i]
+	env.push(ArrayValue{elems})
+}
+
+func builtinSplat(env *Environment) {
+	av, ok := env.pop().(ArrayValue)
+	if !ok {
+		panic("not an array")
+	}
+	env.Stack = append(env.Stack, av.elems...)
+}
+
+func builtinSplit(env *Environment) {
+	sep := env.pop()
+	switch av := env.pop().(type) {
+	case StringValue:
+		s, ok := sep.(StringValue)
+		if !ok {
+			panic("strings can only be split by other strings")
+		}
+		elems := strings.Split(av.s, s.s)
+		var split ArrayValue
+		for _, e := range elems {
+			split.elems = append(split.elems, StringValue{e})
+		}
+		env.push(split)
+	case ArrayValue:
+		var split ArrayValue
+		var group ArrayValue
+		for _, v := range av.elems {
+			if equals(v, sep) {
+				split.elems = append(split.elems, group)
+				group = ArrayValue{}
+			} else {
+				group.elems = append(group.elems, v)
+			}
+		}
+		split.elems = append(split.elems, group)
+		env.push(split)
+	default:
+		panic("unhandled split type")
+	}
+}
+
+func builtinAt(env *Environment) {
+	iv, ok := env.pop().(IntegerValue)
+	if !ok {
+		panic("not an integer")
+	}
+	av, ok := env.pop().(ArrayValue)
+	if !ok {
+		panic("not an array")
+	}
+	if iv.i < 0 {
+		iv.i = int64(len(av.elems)) + iv.i
+	}
+	env.push(av.elems[iv.i])
+}
+
+func builtinEval(env *Environment) {
+	qv, ok := env.pop().(QuotationValue)
+	if !ok {
+		panic("not an integer")
+	}
+	for _, v := range qv.body {
+		env.Eval(v)
+	}
+}
+
+func builtinEqn(env *Environment) {
+	sv, ok := env.pop().(StringValue)
+	if !ok {
+		panic("not a string")
+	}
+	// determine number of variables
+	vars := make(map[rune]Value)
+	for _, c := range sv.s {
+		if 'a' <= c && c <= 'z' {
+			if _, ok := vars[c]; !ok {
+				vars[c] = env.pop()
+			}
+		}
+	}
+
+}
+
+func builtinFind(env *Environment) {
+	f := env.pop()
+	av, ok := env.pop().(ArrayValue)
+	if !ok {
+		panic("not an array")
+	}
+	switch f := f.(type) {
+	case IntegerValue:
+		for i, e := range av.elems {
+			if equals(e, f) {
+				env.push(IntegerValue{int64(i)})
+				return
+			}
+		}
+		panic("not found") // TODO: what should be pushed here?
+	default:
+		panic("unhandled find type")
+	}
+}
+
+func builtinInts(env *Environment) {
+	sv, ok := env.pop().(StringValue)
+	if !ok {
+		panic("not a quotation")
+	}
+	fs := strings.FieldsFunc(sv.s, func(r rune) bool {
+		return !unicode.IsDigit(r) && r != '-'
+	})
+	var iv ArrayValue
+	for _, w := range fs {
+		i, err := strconv.Atoi(w)
+		if err == nil {
+			iv.elems = append(iv.elems, IntegerValue{int64(i)})
+		}
+	}
+	env.push(iv)
+}
+
+func builtinLen(env *Environment) {
+	av, ok := env.pop().(ArrayValue)
+	if !ok {
+		panic("not an array")
+	}
+	env.push(IntegerValue{i: int64(len(av.elems))})
+}
+
+func builtinMap(env *Environment) {
+	qv, ok := env.pop().(QuotationValue)
+	if !ok {
+		panic("not a quotation")
+	}
+	av, ok := env.pop().(ArrayValue)
+	if !ok {
+		panic("not an array")
+	}
+	builtinStartArray(env)
+	for _, v := range av.elems {
+		env.push(v)
+		for _, e := range qv.body {
+			env.Eval(e)
+		}
+	}
+	builtinEndArray(env)
+}
+
+func builtinWrap(env *Environment) {
+	iv, ok := env.pop().(IntegerValue)
+	if !ok {
+		panic("not an integer")
+	}
+	av := env.pop()
+	switch av := av.(type) {
+	case ArrayValue:
+		builtinStartArray(env)
+		for len(av.elems) > 0 {
+			n := int(iv.i)
+			if n > len(av.elems) {
+				n = len(av.elems)
+			}
+			env.push(ArrayValue{append([]Value(nil), av.elems[:n]...)})
+			av.elems = av.elems[n:]
+		}
+		builtinEndArray(env)
+
+	case StringValue:
+		builtinStartArray(env)
+		for len(av.s) > 0 {
+			n := int(iv.i)
+			if n > len(av.s) {
+				n = len(av.s)
+			}
+			env.push(StringValue{av.s[:n]})
+			av.s = av.s[n:]
+		}
+		builtinEndArray(env)
+	default:
+		panic("invalid wrap type")
+	}
+}
+
+func builtinMatch(env *Environment) {
+	pat, ok := env.pop().(ArrayValue)
+	if !ok {
+		panic("not an array")
+	}
+	vals, ok := env.pop().(ArrayValue)
+	if !ok {
+		panic("not an array")
+	}
+	if len(pat.elems)%2 != 0 {
+		panic("match patterns not evenly paired")
+	}
+	m := make(map[Value]Value)
+	for i := 0; i < len(pat.elems); i += 2 {
+		m[pat.elems[i]] = pat.elems[i+1]
+	}
+	builtinStartArray(env)
+	for _, v := range vals.elems {
+		v, ok := m[v]
+		if !ok {
+			panic("unhandled pattern")
+		}
+		env.push(v)
+	}
+	builtinEndArray(env)
+}
+
+func builtinFlatten(env *Environment) {
+	var flatten func(av ArrayValue) ArrayValue
+	flatten = func(av ArrayValue) ArrayValue {
+		var f ArrayValue
+		for _, v := range av.elems {
+			switch v := v.(type) {
+			case ArrayValue:
+				f.elems = append(f.elems, flatten(v).elems...)
+			default:
+				f.elems = append(f.elems, v)
+			}
+		}
+		return f
+	}
+	av, ok := env.pop().(ArrayValue)
+	if !ok {
+		panic("not an array")
+	}
+	env.push(flatten(av))
+}
+
+func builtinFold(env *Environment) {
+	qv, ok := env.pop().(QuotationValue)
+	if !ok {
+		panic("not a quotation")
+	}
+	av, ok := env.pop().(ArrayValue)
+	if !ok {
+		panic("not an array")
+	}
+	for _, v := range av.elems {
+		env.push(v)
+		for _, e := range qv.body {
+			env.Eval(e)
+		}
+	}
+}
+
+func builtinFold1(env *Environment) {
+	qv, ok := env.pop().(QuotationValue)
+	if !ok {
+		panic("not a quotation")
+	}
+	av, ok := env.pop().(ArrayValue)
+	if !ok {
+		panic("not an array")
+	}
+	env.push(av.elems[0])
+	for _, v := range av.elems[1:] {
+		env.push(v)
+		for _, e := range qv.body {
+			env.Eval(e)
+		}
+	}
+}
+
+func builtinScan1(env *Environment) {
+	qv, ok := env.pop().(QuotationValue)
+	if !ok {
+		panic("not a quotation")
+	}
+	av, ok := env.pop().(ArrayValue)
+	if !ok {
+		panic("not an array")
+	}
+	env.push(av.elems[0])
+	for _, v := range av.elems[1:] {
+		builtinDup(env)
+		env.push(v)
+		for _, e := range qv.body {
+			env.Eval(e)
+		}
+	}
+	env.push(IntegerValue{int64(len(av.elems))})
+	builtinArray(env)
+}
+
+func builtinReverse(env *Environment) {
+	av, ok := env.pop().(ArrayValue)
+	if !ok {
+		panic("not a string")
+	}
+	var r ArrayValue
+	for i := range av.elems {
+		r.elems = append(r.elems, av.elems[len(av.elems)-i-1])
+	}
+	env.push(r)
+}
+
+func builtinSlurp(env *Environment) {
+	sv, ok := env.pop().(StringValue)
 	if !ok {
 		panic("not a string")
 	}
@@ -184,29 +593,25 @@ func (env *Environment) implCat(args []ast.Expression) Value {
 	if err != nil {
 		panic(err)
 	}
-	return StringValue{string(data)}
+	env.push(StringValue{string(data)})
 }
 
-func (env *Environment) implCount(args []ast.Expression) Value {
-	if len(args) != 2 {
-		panic("wrong number of args")
-	}
+func builtinChars(env *Environment) {
+	env.push(IntegerValue{1})
+	builtinWrap(env)
+}
+
+func builtinCount(env *Environment) {
 	var n int64
-	cv := env.evalExpression(args[0])
-	switch arr := env.evalExpression(args[1]).(type) {
+	cv := env.pop()
+	switch arr := env.pop().(type) {
 	case ArrayValue:
-		if len(arr.elems) == 0 {
-			return IntegerValue{0}
-		}
 		for _, e := range arr.elems {
 			if equals(e, cv) {
 				n++
 			}
 		}
 	case StringValue:
-		if len(arr.s) == 0 {
-			return IntegerValue{0}
-		}
 		sv, ok := cv.(StringValue)
 		if !ok {
 			panic("not a string")
@@ -215,14 +620,97 @@ func (env *Environment) implCount(args []ast.Expression) Value {
 	default:
 		panic("invalid type for count")
 	}
-	return IntegerValue{n}
+	env.push(IntegerValue{n})
 }
 
-func (env *Environment) implSum(args []ast.Expression) Value {
-	if len(args) != 1 {
-		panic("wrong number of args")
+func builtinWith(env *Environment) {
+	q, ok := env.pop().(QuotationValue)
+	if !ok {
+		panic("not an array")
 	}
-	av, ok := env.evalExpression(args[0]).(ArrayValue)
+	v := env.pop()
+	// TODO: this is ghastly
+	q.body = append(parser.Parse(lexer.Tokenize(v.String())).Expressions, q.body...)
+	env.push(q)
+}
+
+func builtinTake(env *Environment) {
+	n, ok := env.pop().(IntegerValue)
+	if !ok {
+		panic("not an integer")
+	}
+	av, ok := env.pop().(ArrayValue)
+	if !ok {
+		panic("not an array")
+	}
+	if int64(len(av.elems)) < n.i {
+		n.i = int64(len(av.elems))
+	}
+	env.push(ArrayValue{elems: append([]Value(nil), av.elems[:n.i]...)})
+}
+
+func builtinSkip(env *Environment) {
+	n, ok := env.pop().(IntegerValue)
+	if !ok {
+		panic("not an integer")
+	}
+	av, ok := env.pop().(ArrayValue)
+	if !ok {
+		panic("not an array")
+	}
+	if int64(len(av.elems)) < n.i {
+		n.i = int64(len(av.elems))
+	}
+	env.push(ArrayValue{elems: append([]Value(nil), av.elems[n.i:]...)})
+}
+
+func builtinUpto(env *Environment) {
+	iv, ok := env.pop().(IntegerValue)
+	if !ok {
+		panic("not an integer")
+	}
+	inc := int64(1)
+	if iv.i < 0 {
+		inc = -1
+	}
+	var av ArrayValue
+	i := IntegerValue{0}
+	for i != iv {
+		av.elems = append(av.elems, i)
+		i.i += inc
+	}
+	env.push(av)
+}
+
+func builtinSort(env *Environment) {
+	av, ok := env.pop().(ArrayValue)
+	if !ok {
+		panic("not an array")
+	}
+	s := ArrayValue{elems: append([]Value(nil), av.elems...)}
+	sort.Slice(s.elems, func(i, j int) bool {
+		switch ai := s.elems[i].(type) {
+		case IntegerValue:
+			aj, ok := s.elems[j].(IntegerValue)
+			if !ok {
+				panic("cannot sort array containing different types")
+			}
+			return ai.i < aj.i
+		case StringValue:
+			aj, ok := s.elems[j].(StringValue)
+			if !ok {
+				panic("cannot sort array containing different types")
+			}
+			return ai.s < aj.s
+		default:
+			panic("not an array of integers or strings")
+		}
+	})
+	env.push(s)
+}
+
+func builtinSum(env *Environment) {
+	av, ok := env.pop().(ArrayValue)
 	if !ok {
 		panic("not an array")
 	}
@@ -235,10 +723,74 @@ func (env *Environment) implSum(args []ast.Expression) Value {
 			panic("can't add non-integer type")
 		}
 	}
-	return IntegerValue{sum}
+	env.push(IntegerValue{sum})
 }
 
-func (env *Environment) opPlus(l, r Value) Value {
+func builtinUniq(env *Environment) {
+	a, ok := env.pop().(ArrayValue)
+	if !ok {
+		panic("not an array")
+	}
+	var u ArrayValue
+	seen := make(map[string]struct{})
+	for _, e := range a.elems {
+		s := e.String()
+		if _, ok := seen[s]; !ok {
+			seen[s] = struct{}{}
+			u.elems = append(u.elems, e)
+		}
+	}
+	env.push(u)
+}
+
+func builtinZip(env *Environment) {
+	q, ok := env.pop().(QuotationValue)
+	if !ok {
+		panic("not an array")
+	}
+	a1, ok := env.pop().(ArrayValue)
+	if !ok {
+		panic("not an array")
+	}
+	a2, ok := env.pop().(ArrayValue)
+	if !ok {
+		panic("not an array")
+	}
+	if len(a1.elems) != len(a2.elems) {
+		panic("array length mismatch")
+	}
+	for i := range a1.elems {
+		env.push(a1.elems[i])
+		env.push(a2.elems[i])
+		for _, e := range q.body {
+			env.Eval(e)
+		}
+	}
+	env.push(IntegerValue{int64(len(a1.elems))})
+	builtinArray(env)
+}
+
+func builtinPlus(env *Environment) {
+	r, l := env.pop(), env.pop()
+	env.push(opPlus(l, r))
+}
+
+func builtinMinus(env *Environment) {
+	r, l := env.pop(), env.pop()
+	env.push(opMinus(l, r))
+}
+
+func builtinMultiply(env *Environment) {
+	r, l := env.pop(), env.pop()
+	env.push(opMultiply(l, r))
+}
+
+func builtinDivide(env *Environment) {
+	r, l := env.pop(), env.pop()
+	env.push(opPlus(l, r))
+}
+
+func opPlus(l, r Value) Value {
 	switch l := l.(type) {
 	case IntegerValue:
 		switch r := r.(type) {
@@ -260,13 +812,13 @@ func (env *Environment) opPlus(l, r Value) Value {
 		switch r := r.(type) {
 		case IntegerValue:
 			for i, le := range l.elems {
-				l.elems[i] = env.opPlus(le, r)
+				l.elems[i] = opPlus(le, r)
 			}
 			return l
 
 		case StringValue:
 			for i, le := range l.elems {
-				l.elems[i] = env.opPlus(le, r)
+				l.elems[i] = opPlus(le, r)
 			}
 			return l
 
@@ -282,7 +834,7 @@ func (env *Environment) opPlus(l, r Value) Value {
 	}
 }
 
-func (env *Environment) opMinus(l, r Value) Value {
+func opMinus(l, r Value) Value {
 	switch l := l.(type) {
 	case IntegerValue:
 		switch r := r.(type) {
@@ -314,13 +866,13 @@ func (env *Environment) opMinus(l, r Value) Value {
 		switch r := r.(type) {
 		case IntegerValue:
 			for i, le := range l.elems {
-				l.elems[i] = env.opMinus(le, r)
+				l.elems[i] = opMinus(le, r)
 			}
 			return l
 
 		case StringValue:
 			for i, le := range l.elems {
-				l.elems[i] = env.opMinus(le, r)
+				l.elems[i] = opMinus(le, r)
 			}
 			return l
 
@@ -345,58 +897,48 @@ func (env *Environment) opMinus(l, r Value) Value {
 	}
 }
 
-func (env *Environment) evalExpression(n ast.Node) Value {
-	switch n := n.(type) {
-	case ast.FunctionCall:
-		return env.evalFunctionCall(n)
-
-	case ast.Assignment:
-		v := env.evalExpression(n.Value)
-		env.vars[n.Var.Name] = v
-		return v
-
-	case ast.InfixOp:
-		return map[token.Kind]func(l, r Value) Value{
-			token.Plus:  env.opPlus,
-			token.Minus: env.opMinus,
-		}[n.Operator](env.evalExpression(n.Left), env.evalExpression(n.Right))
-
-	case ast.Pipe:
-		switch dst := n.Right.(type) {
-		case ast.FunctionCall:
-			dst.Args = append(dst.Args, n.Left)
-			return env.evalFunctionCall(dst)
+func opMultiply(l, r Value) Value {
+	switch l := l.(type) {
+	case IntegerValue:
+		switch r := r.(type) {
+		case IntegerValue:
+			return IntegerValue{l.i * r.i}
 		default:
-			// arbitrary expression; evaluate with $ set to lhs
-			env.vars["x"] = env.evalExpression(n.Left)
-			return env.evalExpression(n.Right)
+			panic("illegal multiply types")
 		}
 
-	case ast.Integer:
-		i, _ := strconv.ParseInt(n.Value, 0, 64) // TODO: parse as bigint
-		return IntegerValue{i}
+	case ArrayValue:
+		switch r := r.(type) {
+		case IntegerValue:
+			for i, le := range l.elems {
+				l.elems[i] = opMultiply(le, r)
+			}
+			return l
 
-	case ast.String:
-		return StringValue{n.Value}
+		case ArrayValue:
+			var matrix ArrayValue
+			for i := range l.elems {
+				lv, ok := l.elems[i].(IntegerValue)
+				if !ok {
+					panic("can only multiply arrays of integers")
+				}
+				var row ArrayValue
+				for j := range r.elems {
+					rv, ok := r.elems[j].(IntegerValue)
+					if !ok {
+						panic("can only multiply arrays of integers")
+					}
+					row.elems = append(row.elems, IntegerValue{lv.i * rv.i})
+				}
+				matrix.elems = append(matrix.elems, row)
+			}
+			return matrix
 
-	case ast.Array:
-		elems := make([]Value, len(n.Elements))
-		for i := range elems {
-			elems[i] = env.evalExpression(n.Elements[i])
+		default:
+			panic("illegal multiply types")
 		}
-		return ArrayValue{elems}
-
-	case ast.Identifier:
-		v, ok := env.lookup(n.Name)
-		if !ok {
-			panic("no variable found")
-		}
-		return v
-
-	case ast.Lambda:
-		return LambdaValue{n.Body}
 
 	default:
-		panic(fmt.Sprintf("couldn't evaluate type %T", n))
+		panic("unhandled multiply type")
 	}
 }
