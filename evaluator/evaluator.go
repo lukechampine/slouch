@@ -3,15 +3,17 @@ package evaluator
 
 import (
 	"fmt"
-	"io/ioutil"
-	"sort"
+	goast "go/ast"
+	goparser "go/parser"
+	gotoken "go/token"
+	"reflect"
 	"strconv"
 	"strings"
-	"unicode"
 
 	"lukechampine.com/slouch/ast"
-	"lukechampine.com/slouch/lexer"
-	"lukechampine.com/slouch/parser"
+
+	"github.com/traefik/yaegi/interp"
+	"github.com/traefik/yaegi/stdlib"
 )
 
 type Value interface {
@@ -33,6 +35,13 @@ type StringValue struct {
 func (sv StringValue) isValue()       {}
 func (sv StringValue) String() string { return strconv.Quote(sv.s) }
 
+type BoolValue struct {
+	b bool
+}
+
+func (bv BoolValue) isValue()       {}
+func (bv BoolValue) String() string { return strconv.FormatBool(bv.b) }
+
 type ArrayValue struct {
 	elems []Value
 }
@@ -43,902 +52,240 @@ func (av ArrayValue) String() string {
 	for i := range strs {
 		strs[i] = av.elems[i].String()
 	}
-	return "[" + strings.Join(strs, " ") + "]"
+	return "[" + strings.Join(strs, ", ") + "]"
 }
 
-type ArraySentinel struct{}
-
-func (ArraySentinel) isValue()       {}
-func (ArraySentinel) String() string { return "[" }
-
-type QuotationValue struct {
-	body []ast.Expression
+type PartialValue struct {
+	fn   Value
+	args []Value // missing values represented by nil
 }
 
-func (qv QuotationValue) isValue() {}
-func (qv QuotationValue) String() string {
-	strs := make([]string, len(qv.body))
-	for i := range strs {
-		strs[i] = qv.body[i].String()
+func (pv PartialValue) have() int {
+	n := 0
+	for _, a := range pv.args {
+		if a != nil {
+			n++
+		}
 	}
-	return "( " + strings.Join(strs, " ") + " )"
+	return n
 }
 
-func equals(x, y Value) bool {
-	switch x := x.(type) {
-	case IntegerValue:
-		yv, ok := y.(IntegerValue)
-		if !ok {
-			panic("invalid comparison")
-		}
-		return x.i == yv.i
-	case StringValue:
-		yv, ok := y.(StringValue)
-		if !ok {
-			panic("invalid comparison")
-		}
-		return x.s == yv.s
-	case ArrayValue:
-		yv, ok := y.(ArrayValue)
-		if !ok {
-			panic("invalid comparison")
-		}
-		if len(x.elems) != len(yv.elems) {
-			return false
-		}
-		for i := range x.elems {
-			if !equals(x.elems[i], yv.elems[i]) {
-				return false
-			}
-		}
-		return true
-	default:
-		panic("unhandled comparison")
-	}
+func (pv PartialValue) isValue() {}
+func (pv PartialValue) String() string {
+	return fmt.Sprintf("<partial (%d-adic, have %v)>", len(pv.args), pv.have())
 }
 
-type envFn func(*Environment)
+type BuiltinValue struct {
+	name  string
+	nargs int
+	fn    func(*Environment, []Value) Value
+}
+
+func (bv BuiltinValue) isValue() {}
+func (bv BuiltinValue) String() string {
+	return fmt.Sprintf("<builtin %q (%d-adic)>", bv.name, bv.nargs)
+}
+
+type GoValue struct {
+	name string
+}
+
+func (gv GoValue) isValue()       {}
+func (gv GoValue) String() string { return gv.name }
 
 type Environment struct {
-	Stack []Value
-	vars  map[string]envFn
+	gointerp *interp.Interpreter
+	idents   map[string]Value
 }
 
-func New() *Environment {
-	return &Environment{
-		vars: make(map[string]envFn),
-	}
-}
-
-func (env *Environment) lookup(name string) (envFn, bool) {
-	v, ok := env.vars[name]
-	return v, ok
-}
-
-func (env *Environment) Eval(n ast.Expression) {
-	env.computeEnvFn(n)(env)
-}
-
-func (env *Environment) pop() (v Value) {
-	v, env.Stack = env.Stack[len(env.Stack)-1], env.Stack[:len(env.Stack)-1]
-	return
-}
-
-func (env *Environment) push(v Value) {
-	env.Stack = append(env.Stack, v)
-}
-
-func (env *Environment) computeEnvFn(n ast.Node) envFn {
-	pushFn := func(v Value) envFn { return func(e *Environment) { e.push(v) } }
-
-	switch n := n.(type) {
-	case ast.Identifier:
-		if fn, ok := env.vars[n.Name]; ok {
-			return fn
-		} else if fn, ok := builtins[n.Name]; ok {
-			return fn
-		}
-		panic(fmt.Sprintf("unknown identifier"))
-
-	case ast.Integer:
-		i, _ := strconv.ParseInt(n.Value, 0, 64) // TODO: parse as bigint
-		return pushFn(IntegerValue{i})
-
-	case ast.String:
-		return pushFn(StringValue{n.Value})
-
-	case ast.Quotation:
-		return pushFn(QuotationValue{n.Body})
-
-	default:
-		panic(fmt.Sprintf("couldn't evaluate type %T", n))
-	}
-}
-
-// autocomplete
-func (env *Environment) Do(line []rune, pos int) (completions [][]rune, length int) {
-	// to type-check, we need to evaluate any preceeding expressions first, so
-	// save a copy that we can restore later
-	stack := append([]Value(nil), env.Stack...)
-	defer func() { env.Stack = stack }()
-
-	length = pos
-	s := string(line[:pos])
-	space := strings.LastIndexByte(s, ' ')
-	s = s[space+1:]
-	for b := range builtins {
-		if strings.HasPrefix(b, s) {
-			completions = append(completions, []rune(strings.TrimPrefix(b, s)))
-		}
-	}
-	sort.Slice(completions, func(i, j int) bool {
-		return string(completions[i]) < string(completions[j])
-	})
-	return
-}
-
-// sadly, must use init here to avoid cyclical references to Eval
-var builtins map[string]envFn
-
-func init() {
-	builtins = map[string]envFn{
-		"-":       builtinMinus,
-		"[":       builtinStartArray,
-		"]":       builtinEndArray,
-		"*":       builtinMultiply,
-		"/":       builtinDivide,
-		"+":       builtinPlus,
-		"apply":   builtinApply,
-		"array":   builtinArray,
-		"at":      builtinAt,
-		"chars":   builtinChars,
-		"count":   builtinCount,
-		"drop":    builtinDrop,
-		"dup":     builtinDup,
-		"eval":    builtinEval,
-		"eqn":     builtinEqn,
-		"find":    builtinFind,
-		"flatten": builtinFlatten,
-		"fold":    builtinFold,
-		"fold1":   builtinFold1,
-		"ints":    builtinInts,
-		"len":     builtinLen,
-		"map":     builtinMap,
-		"match":   builtinMatch,
-		"reverse": builtinReverse,
-		"slurp":   builtinSlurp,
-		"scan1":   builtinScan1,
-		"skip":    builtinSkip,
-		"splat":   builtinSplat,
-		"split":   builtinSplit,
-		"sort":    builtinSort,
-		"sum":     builtinSum,
-		"swap":    builtinSwap,
-		"take":    builtinTake,
-		"upto":    builtinUpto,
-		"with":    builtinWith,
-		"wrap":    builtinWrap,
-		"uniq":    builtinUniq,
-		"zip":     builtinZip,
-	}
-}
-
-func builtinDup(env *Environment) {
-	v := env.pop()
-	env.push(v)
-	env.push(v)
-}
-
-func builtinSwap(env *Environment) {
-	a := env.pop()
-	b := env.pop()
-	env.push(a)
-	env.push(b)
-}
-
-func builtinDrop(env *Environment) {
-	env.pop()
-}
-
-func builtinStartArray(env *Environment) {
-	env.push(ArraySentinel{})
-}
-
-func builtinEndArray(env *Environment) {
-	i := len(env.Stack) - 1
-	for ; i >= 0; i-- {
-		v := env.Stack[i]
-		if _, ok := v.(ArraySentinel); ok {
-			break
-		}
-	}
-	elems := append([]Value(nil), env.Stack[i+1:]...)
-	env.Stack = env.Stack[:i]
-	env.push(ArrayValue{elems})
-}
-
-func builtinApply(env *Environment) {
-	av, ok := env.pop().(ArrayValue)
-	if !ok {
-		panic("not an array")
-	}
-	v := env.pop()
-	for _, qe := range av.elems {
-		q, ok := qe.(QuotationValue)
-		if !ok {
-			panic("not a quotation")
-		}
-		env.push(v)
-		for _, e := range q.body {
-			env.Eval(e)
-		}
-	}
-}
-
-func builtinArray(env *Environment) {
-	iv, ok := env.pop().(IntegerValue)
-	if !ok {
-		panic("not an integer")
-	}
-	i := len(env.Stack) - int(iv.i)
-	elems := append([]Value(nil), env.Stack[i:]...)
-	env.Stack = env.Stack[:i]
-	env.push(ArrayValue{elems})
-}
-
-func builtinSplat(env *Environment) {
-	av, ok := env.pop().(ArrayValue)
-	if !ok {
-		panic("not an array")
-	}
-	env.Stack = append(env.Stack, av.elems...)
-}
-
-func builtinSplit(env *Environment) {
-	sep := env.pop()
-	switch av := env.pop().(type) {
-	case StringValue:
-		s, ok := sep.(StringValue)
-		if !ok {
-			panic("strings can only be split by other strings")
-		}
-		elems := strings.Split(av.s, s.s)
-		var split ArrayValue
-		for _, e := range elems {
-			split.elems = append(split.elems, StringValue{e})
-		}
-		env.push(split)
-	case ArrayValue:
-		var split ArrayValue
-		var group ArrayValue
-		for _, v := range av.elems {
-			if equals(v, sep) {
-				split.elems = append(split.elems, group)
-				group = ArrayValue{}
-			} else {
-				group.elems = append(group.elems, v)
-			}
-		}
-		split.elems = append(split.elems, group)
-		env.push(split)
-	default:
-		panic("unhandled split type")
-	}
-}
-
-func builtinAt(env *Environment) {
-	iv, ok := env.pop().(IntegerValue)
-	if !ok {
-		panic("not an integer")
-	}
-	av, ok := env.pop().(ArrayValue)
-	if !ok {
-		panic("not an array")
-	}
-	if iv.i < 0 {
-		iv.i = int64(len(av.elems)) + iv.i
-	}
-	env.push(av.elems[iv.i])
-}
-
-func builtinEval(env *Environment) {
-	qv, ok := env.pop().(QuotationValue)
-	if !ok {
-		panic("not an integer")
-	}
-	for _, v := range qv.body {
-		env.Eval(v)
-	}
-}
-
-func builtinEqn(env *Environment) {
-	sv, ok := env.pop().(StringValue)
-	if !ok {
-		panic("not a string")
-	}
-	// determine number of variables
-	vars := make(map[rune]Value)
-	for _, c := range sv.s {
-		if 'a' <= c && c <= 'z' {
-			if _, ok := vars[c]; !ok {
-				vars[c] = env.pop()
-			}
-		}
-	}
-
-}
-
-func builtinFind(env *Environment) {
-	f := env.pop()
-	av, ok := env.pop().(ArrayValue)
-	if !ok {
-		panic("not an array")
-	}
-	switch f := f.(type) {
-	case IntegerValue:
-		for i, e := range av.elems {
-			if equals(e, f) {
-				env.push(IntegerValue{int64(i)})
-				return
-			}
-		}
-		panic("not found") // TODO: what should be pushed here?
-	default:
-		panic("unhandled find type")
-	}
-}
-
-func builtinInts(env *Environment) {
-	sv, ok := env.pop().(StringValue)
-	if !ok {
-		panic("not a quotation")
-	}
-	fs := strings.FieldsFunc(sv.s, func(r rune) bool {
-		return !unicode.IsDigit(r) && r != '-'
-	})
-	var iv ArrayValue
-	for _, w := range fs {
-		i, err := strconv.Atoi(w)
-		if err == nil {
-			iv.elems = append(iv.elems, IntegerValue{int64(i)})
-		}
-	}
-	env.push(iv)
-}
-
-func builtinLen(env *Environment) {
-	av, ok := env.pop().(ArrayValue)
-	if !ok {
-		panic("not an array")
-	}
-	env.push(IntegerValue{i: int64(len(av.elems))})
-}
-
-func builtinMap(env *Environment) {
-	qv, ok := env.pop().(QuotationValue)
-	if !ok {
-		panic("not a quotation")
-	}
-	av, ok := env.pop().(ArrayValue)
-	if !ok {
-		panic("not an array")
-	}
-	builtinStartArray(env)
-	for _, v := range av.elems {
-		env.push(v)
-		for _, e := range qv.body {
-			env.Eval(e)
-		}
-	}
-	builtinEndArray(env)
-}
-
-func builtinWrap(env *Environment) {
-	iv, ok := env.pop().(IntegerValue)
-	if !ok {
-		panic("not an integer")
-	}
-	av := env.pop()
-	switch av := av.(type) {
-	case ArrayValue:
-		builtinStartArray(env)
-		for len(av.elems) > 0 {
-			n := int(iv.i)
-			if n > len(av.elems) {
-				n = len(av.elems)
-			}
-			env.push(ArrayValue{append([]Value(nil), av.elems[:n]...)})
-			av.elems = av.elems[n:]
-		}
-		builtinEndArray(env)
-
-	case StringValue:
-		builtinStartArray(env)
-		for len(av.s) > 0 {
-			n := int(iv.i)
-			if n > len(av.s) {
-				n = len(av.s)
-			}
-			env.push(StringValue{av.s[:n]})
-			av.s = av.s[n:]
-		}
-		builtinEndArray(env)
-	default:
-		panic("invalid wrap type")
-	}
-}
-
-func builtinMatch(env *Environment) {
-	pat, ok := env.pop().(ArrayValue)
-	if !ok {
-		panic("not an array")
-	}
-	vals, ok := env.pop().(ArrayValue)
-	if !ok {
-		panic("not an array")
-	}
-	if len(pat.elems)%2 != 0 {
-		panic("match patterns not evenly paired")
-	}
-	m := make(map[Value]Value)
-	for i := 0; i < len(pat.elems); i += 2 {
-		m[pat.elems[i]] = pat.elems[i+1]
-	}
-	builtinStartArray(env)
-	for _, v := range vals.elems {
-		v, ok := m[v]
-		if !ok {
-			panic("unhandled pattern")
-		}
-		env.push(v)
-	}
-	builtinEndArray(env)
-}
-
-func builtinFlatten(env *Environment) {
-	var flatten func(av ArrayValue) ArrayValue
-	flatten = func(av ArrayValue) ArrayValue {
-		var f ArrayValue
-		for _, v := range av.elems {
-			switch v := v.(type) {
-			case ArrayValue:
-				f.elems = append(f.elems, flatten(v).elems...)
-			default:
-				f.elems = append(f.elems, v)
-			}
-		}
-		return f
-	}
-	av, ok := env.pop().(ArrayValue)
-	if !ok {
-		panic("not an array")
-	}
-	env.push(flatten(av))
-}
-
-func builtinFold(env *Environment) {
-	qv, ok := env.pop().(QuotationValue)
-	if !ok {
-		panic("not a quotation")
-	}
-	av, ok := env.pop().(ArrayValue)
-	if !ok {
-		panic("not an array")
-	}
-	for _, v := range av.elems {
-		env.push(v)
-		for _, e := range qv.body {
-			env.Eval(e)
-		}
-	}
-}
-
-func builtinFold1(env *Environment) {
-	qv, ok := env.pop().(QuotationValue)
-	if !ok {
-		panic("not a quotation")
-	}
-	av, ok := env.pop().(ArrayValue)
-	if !ok {
-		panic("not an array")
-	}
-	env.push(av.elems[0])
-	for _, v := range av.elems[1:] {
-		env.push(v)
-		for _, e := range qv.body {
-			env.Eval(e)
-		}
-	}
-}
-
-func builtinScan1(env *Environment) {
-	qv, ok := env.pop().(QuotationValue)
-	if !ok {
-		panic("not a quotation")
-	}
-	av, ok := env.pop().(ArrayValue)
-	if !ok {
-		panic("not an array")
-	}
-	env.push(av.elems[0])
-	for _, v := range av.elems[1:] {
-		builtinDup(env)
-		env.push(v)
-		for _, e := range qv.body {
-			env.Eval(e)
-		}
-	}
-	env.push(IntegerValue{int64(len(av.elems))})
-	builtinArray(env)
-}
-
-func builtinReverse(env *Environment) {
-	av, ok := env.pop().(ArrayValue)
-	if !ok {
-		panic("not a string")
-	}
-	var r ArrayValue
-	for i := range av.elems {
-		r.elems = append(r.elems, av.elems[len(av.elems)-i-1])
-	}
-	env.push(r)
-}
-
-func builtinSlurp(env *Environment) {
-	sv, ok := env.pop().(StringValue)
-	if !ok {
-		panic("not a string")
-	}
-	data, err := ioutil.ReadFile(sv.s)
+func (env *Environment) addFuncSymbols(snippet string) {
+	f, err := goparser.ParseFile(gotoken.NewFileSet(), "_.go", "package foo\n\n"+snippet, 0)
 	if err != nil {
 		panic(err)
 	}
-	env.push(StringValue{string(data)})
+	for _, dec := range f.Decls {
+		if fn, ok := dec.(*goast.FuncDecl); ok {
+			env.idents[fn.Name.Name] = GoValue{fn.Name.Name}
+			// TODO: include fn metadata (nargs)
+			// TODO: maybe just convert to FnValue?
+		}
+		// TODO: add variable decls?
+	}
 }
 
-func builtinChars(env *Environment) {
-	env.push(IntegerValue{1})
-	builtinWrap(env)
-}
-
-func builtinCount(env *Environment) {
-	var n int64
-	cv := env.pop()
-	switch arr := env.pop().(type) {
-	case ArrayValue:
-		for _, e := range arr.elems {
-			if equals(e, cv) {
-				n++
+func (env *Environment) Run(p ast.Program, input string) error {
+	env.idents["input"] = StringValue{input}
+	for _, n := range p.Stmts {
+		switch n := n.(type) {
+		case ast.SnippetStmt:
+			if _, err := env.gointerp.Eval(n.Code); err != nil {
+				return err
 			}
-		}
-	case StringValue:
-		sv, ok := cv.(StringValue)
-		if !ok {
-			panic("not a string")
-		}
-		n = int64(strings.Count(arr.s, sv.s))
-	default:
-		panic("invalid type for count")
-	}
-	env.push(IntegerValue{n})
-}
-
-func builtinWith(env *Environment) {
-	q, ok := env.pop().(QuotationValue)
-	if !ok {
-		panic("not an array")
-	}
-	v := env.pop()
-	// TODO: this is ghastly
-	q.body = append(parser.Parse(lexer.Tokenize(v.String())).Expressions, q.body...)
-	env.push(q)
-}
-
-func builtinTake(env *Environment) {
-	n, ok := env.pop().(IntegerValue)
-	if !ok {
-		panic("not an integer")
-	}
-	av, ok := env.pop().(ArrayValue)
-	if !ok {
-		panic("not an array")
-	}
-	if int64(len(av.elems)) < n.i {
-		n.i = int64(len(av.elems))
-	}
-	env.push(ArrayValue{elems: append([]Value(nil), av.elems[:n.i]...)})
-}
-
-func builtinSkip(env *Environment) {
-	n, ok := env.pop().(IntegerValue)
-	if !ok {
-		panic("not an integer")
-	}
-	av, ok := env.pop().(ArrayValue)
-	if !ok {
-		panic("not an array")
-	}
-	if int64(len(av.elems)) < n.i {
-		n.i = int64(len(av.elems))
-	}
-	env.push(ArrayValue{elems: append([]Value(nil), av.elems[n.i:]...)})
-}
-
-func builtinUpto(env *Environment) {
-	iv, ok := env.pop().(IntegerValue)
-	if !ok {
-		panic("not an integer")
-	}
-	inc := int64(1)
-	if iv.i < 0 {
-		inc = -1
-	}
-	var av ArrayValue
-	i := IntegerValue{0}
-	for i != iv {
-		av.elems = append(av.elems, i)
-		i.i += inc
-	}
-	env.push(av)
-}
-
-func builtinSort(env *Environment) {
-	av, ok := env.pop().(ArrayValue)
-	if !ok {
-		panic("not an array")
-	}
-	s := ArrayValue{elems: append([]Value(nil), av.elems...)}
-	sort.Slice(s.elems, func(i, j int) bool {
-		switch ai := s.elems[i].(type) {
-		case IntegerValue:
-			aj, ok := s.elems[j].(IntegerValue)
-			if !ok {
-				panic("cannot sort array containing different types")
+			env.addFuncSymbols(n.Code)
+		case ast.AssignStmt:
+			// if the assignment is to input, and the result is a
+			// partially-applied function missing its last argument, supply
+			// input as the final argument
+			v := env.Eval(n.X)
+			if pv, ok := v.(PartialValue); ok && n.Name.Name == "input" {
+				v = env.apply(pv.fn, []Value{env.idents["input"]})
 			}
-			return ai.i < aj.i
-		case StringValue:
-			aj, ok := s.elems[j].(StringValue)
-			if !ok {
-				panic("cannot sort array containing different types")
+			env.idents[n.Name.Name] = v
+		case ast.ExprStmt:
+			// if the result is a partially-applied function missing its last argument,
+			// supply input as the final argument
+			v := env.Eval(n.X)
+			if pv, ok := v.(PartialValue); ok {
+				v = env.apply(pv.fn, []Value{env.idents["input"]})
 			}
-			return ai.s < aj.s
+			fmt.Println(v)
 		default:
-			panic("not an array of integers or strings")
-		}
-	})
-	env.push(s)
-}
-
-func builtinSum(env *Environment) {
-	av, ok := env.pop().(ArrayValue)
-	if !ok {
-		panic("not an array")
-	}
-	var sum int64
-	for _, e := range av.elems {
-		switch v := e.(type) {
-		case IntegerValue:
-			sum += v.i
-		default:
-			panic("can't add non-integer type")
+			panic(fmt.Sprintf("unknown stmt type %T", n))
 		}
 	}
-	env.push(IntegerValue{sum})
+	return nil
 }
 
-func builtinUniq(env *Environment) {
-	a, ok := env.pop().(ArrayValue)
-	if !ok {
-		panic("not an array")
-	}
-	var u ArrayValue
-	seen := make(map[string]struct{})
-	for _, e := range a.elems {
-		s := e.String()
-		if _, ok := seen[s]; !ok {
-			seen[s] = struct{}{}
-			u.elems = append(u.elems, e)
-		}
-	}
-	env.push(u)
-}
-
-func builtinZip(env *Environment) {
-	q, ok := env.pop().(QuotationValue)
-	if !ok {
-		panic("not an array")
-	}
-	a1, ok := env.pop().(ArrayValue)
-	if !ok {
-		panic("not an array")
-	}
-	a2, ok := env.pop().(ArrayValue)
-	if !ok {
-		panic("not an array")
-	}
-	if len(a1.elems) != len(a2.elems) {
-		panic("array length mismatch")
-	}
-	for i := range a1.elems {
-		env.push(a1.elems[i])
-		env.push(a2.elems[i])
-		for _, e := range q.body {
-			env.Eval(e)
-		}
-	}
-	env.push(IntegerValue{int64(len(a1.elems))})
-	builtinArray(env)
-}
-
-func builtinPlus(env *Environment) {
-	r, l := env.pop(), env.pop()
-	env.push(opPlus(l, r))
-}
-
-func builtinMinus(env *Environment) {
-	r, l := env.pop(), env.pop()
-	env.push(opMinus(l, r))
-}
-
-func builtinMultiply(env *Environment) {
-	r, l := env.pop(), env.pop()
-	env.push(opMultiply(l, r))
-}
-
-func builtinDivide(env *Environment) {
-	r, l := env.pop(), env.pop()
-	env.push(opPlus(l, r))
-}
-
-func opPlus(l, r Value) Value {
-	switch l := l.(type) {
-	case IntegerValue:
-		switch r := r.(type) {
-		case IntegerValue:
-			return IntegerValue{l.i + r.i}
-		default:
-			panic("illegal plus types")
-		}
-
-	case StringValue:
-		switch r := r.(type) {
-		case StringValue:
-			return StringValue{l.s + r.s}
-		default:
-			panic("illegal plus types")
-		}
-
-	case ArrayValue:
-		switch r := r.(type) {
-		case IntegerValue:
-			for i, le := range l.elems {
-				l.elems[i] = opPlus(le, r)
-			}
-			return l
-
-		case StringValue:
-			for i, le := range l.elems {
-				l.elems[i] = opPlus(le, r)
-			}
-			return l
-
-		case ArrayValue:
-			return ArrayValue{append(l.elems, r.elems...)}
-
-		default:
-			panic("illegal plus types")
-		}
-
-	default:
-		panic("unhandled plus type")
-	}
-}
-
-func opMinus(l, r Value) Value {
-	switch l := l.(type) {
-	case IntegerValue:
-		switch r := r.(type) {
-		case IntegerValue:
-			return IntegerValue{l.i - r.i}
-		default:
-			panic("illegal minus types")
-		}
-
-	case StringValue:
-		switch r := r.(type) {
-		case StringValue:
-			var rem []rune
-		strLoop:
-			for _, lc := range l.s {
-				for _, rc := range r.s {
-					if rc == lc {
-						continue strLoop
-					}
+func (env *Environment) Eval(e ast.Expr) Value {
+	switch e := e.(type) {
+	case ast.String:
+		return StringValue{e.Value}
+	case ast.Integer:
+		i, _ := strconv.ParseInt(e.Value, 10, 64) // later: handle bigints
+		return IntegerValue{i}
+	case ast.Ident:
+		if v, ok := env.idents[e.Name]; ok {
+			if bv, ok := v.(BuiltinValue); ok {
+				return PartialValue{
+					fn:   bv,
+					args: make([]Value, bv.nargs),
 				}
-				rem = append(rem, lc)
 			}
-			return StringValue{string(rem)}
-		default:
-			panic("illegal minus types")
+			return v
 		}
-
-	case ArrayValue:
+		panic("unknown identifier " + strconv.Quote(e.Name))
+	case ast.InfixOp:
+		// convert to partial
+		pv := PartialValue{
+			fn:   infixFns[e.Op],
+			args: make([]Value, 2),
+		}
+		if e.Left != nil {
+			pv.args[0] = env.Eval(e.Left)
+		}
+		if e.Right != nil {
+			pv.args[1] = env.Eval(e.Right)
+		}
+		if pv.have() == len(pv.args) {
+			return env.apply(pv.fn, pv.args)
+		}
+		return pv
+	case ast.FnCall:
+		fn := env.Eval(e.Fn)
+		args := make([]Value, len(e.Args))
+		for i, a := range e.Args {
+			// TODO: check for _ here
+			args[i] = env.Eval(a)
+		}
+		return env.apply(fn, args)
+	case ast.Pipe:
+		l, r := env.Eval(e.Left), env.Eval(e.Right)
 		switch r := r.(type) {
-		case IntegerValue:
-			for i, le := range l.elems {
-				l.elems[i] = opMinus(le, r)
-			}
-			return l
-
-		case StringValue:
-			for i, le := range l.elems {
-				l.elems[i] = opMinus(le, r)
-			}
-			return l
-
-		case ArrayValue:
-			var rem []Value
-		arrLoop:
-			for _, le := range l.elems {
-				for _, re := range r.elems {
-					if equals(le, re) {
-						continue arrLoop
-					}
+		case PartialValue:
+			if pv, ok := l.(PartialValue); ok {
+				// whole expression becomes a partial
+				return PartialValue{
+					fn: BuiltinValue{
+						name:  "pipepartial",
+						nargs: len(pv.args),
+						fn: func(env *Environment, args []Value) Value {
+							return env.apply(r, []Value{env.apply(pv.fn, args)})
+						},
+					},
+					args: pv.args,
 				}
-				rem = append(rem, le)
 			}
-			return ArrayValue{rem}
-		default:
-			panic("illegal minus types")
-		}
 
+			return env.apply(r, []Value{l})
+		default:
+			panic(fmt.Sprintf("unhandled pipe RHS %T", r))
+		}
+	case ast.Array:
+		a := ArrayValue{make([]Value, len(e.Elems))}
+		for i := range a.elems {
+			a.elems[i] = env.Eval(e.Elems[i])
+		}
+		return a
 	default:
-		panic("unhandled minus type")
+		panic(fmt.Sprintf("unhandled node type %T", e))
 	}
 }
 
-func opMultiply(l, r Value) Value {
-	switch l := l.(type) {
-	case IntegerValue:
-		switch r := r.(type) {
-		case IntegerValue:
-			return IntegerValue{l.i * r.i}
-		default:
-			panic("illegal multiply types")
-		}
-
-	case ArrayValue:
-		switch r := r.(type) {
-		case IntegerValue:
-			for i, le := range l.elems {
-				l.elems[i] = opMultiply(le, r)
+func (env *Environment) apply(fn Value, args []Value) Value {
+	switch fn := fn.(type) {
+	case BuiltinValue:
+		// TODO: check for _ args
+		if len(args) < fn.nargs {
+			pv := PartialValue{
+				fn:   fn,
+				args: make([]Value, fn.nargs),
 			}
-			return l
-
-		case ArrayValue:
-			var matrix ArrayValue
-			for i := range l.elems {
-				lv, ok := l.elems[i].(IntegerValue)
-				if !ok {
-					panic("can only multiply arrays of integers")
-				}
-				var row ArrayValue
-				for j := range r.elems {
-					rv, ok := r.elems[j].(IntegerValue)
-					if !ok {
-						panic("can only multiply arrays of integers")
-					}
-					row.elems = append(row.elems, IntegerValue{lv.i * rv.i})
-				}
-				matrix.elems = append(matrix.elems, row)
-			}
-			return matrix
-
-		default:
-			panic("illegal multiply types")
+			copy(pv.args, args)
+			return pv
+		} else if len(args) > fn.nargs {
+			panic(fmt.Sprintf("%v expected %v args, got %v", fn.name, fn.nargs, len(args)))
 		}
+		return fn.fn(env, args)
 
+	case PartialValue:
+		if fn.have()+len(args) > len(fn.args) {
+			panic(fmt.Sprintf("too many arguments supplied to function: %v expects %v, got %v", fn.fn, len(fn.args), fn.have()+len(args)))
+		}
+		pv := fn
+		pv.args = append([]Value(nil), fn.args...)
+		for i := range pv.args {
+			if pv.args[i] == nil && len(args) > 0 {
+				pv.args[i], args = args[0], args[1:]
+			}
+		}
+		if pv.have() < len(pv.args) {
+			return pv // still a partial
+		}
+		return env.apply(pv.fn, pv.args)
+
+	case GoValue:
+		// TODO: need to handle arg passing
+		v, err := env.gointerp.Eval(fn.name + "()")
+		if err != nil {
+			panic(err)
+		}
+		switch v.Kind() {
+		case reflect.Int:
+			return IntegerValue{v.Int()}
+		case reflect.String:
+			return StringValue{v.String()}
+		default:
+			panic("unhandled return type")
+		}
 	default:
-		panic("unhandled multiply type")
+		panic(fmt.Sprintf("unhandled fn type: %T", fn))
+	}
+}
+
+func New() *Environment {
+	i := interp.New(interp.Options{GoPath: "/Users/luke/go"})
+	i.Use(stdlib.Symbols)
+	if _, err := i.Eval(`import "fmt"`); err != nil {
+		panic(err)
+		// } else if _, err := i.Eval(`import "lukechampine.com/advent/utils"`); err != nil {
+		// 	panic(err)
+	}
+	idents := make(map[string]Value, len(builtins))
+	for _, b := range builtins {
+		idents[b.name] = b
+	}
+	return &Environment{
+		gointerp: i,
+		idents:   idents,
 	}
 }
