@@ -5,9 +5,9 @@ New plan:
 * implicit vars galore
 * can call Go stdlib functions
 * interpreted
-* breakpoints for debugging
+* breakpoints for debugging?
 * separate terminal for live output
-    * or vscode plugin
+    * or vscode plugin?
 
 IDEA: "provenance"
     * after a map, each value retains its "provenance"
@@ -15,6 +15,9 @@ IDEA: "provenance"
     * could be handy for scenarios where you'd usually need to zip things together manually
     * maybe opt in? call (provenance x) to turn x into a provenance-remembering value
         * perf overhead might be problematic otherwise...
+generic "hidden values"
+    * like a struct, with a "primary" field, but other fields still accessible
+        * function to switch primary
 
 IDEA: choices
     x == 2;3 is equivalent to x == 2 || x == 3
@@ -67,18 +70,6 @@ ints
 }
 
 
-
-TODO:
-- [ ] rewrite everything
-- [ ] readline
-    - [ ] autocomplete!
-	* hoogle-style: suggest fns based on what types are on the stack!!
-- [ ] implement basic math
-- [ ] implement more builtins
-- [ ] conditionals
-- [ ] get simplest solutions working!
-- [ ] implement bigints
-
 ∑ ∫ λ
 
 
@@ -105,7 +96,7 @@ GOALS:
         - cellular automata with next-step rules
     - combinatorics (permutations, n choose k)
     - detecting duplicates
-    - counting occurences
+    - counting occurrences
     - find the input x to f that produces output y
         * (requires ordered output)
         - linear search from lower bound

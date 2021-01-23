@@ -1,2 +1,4 @@
+github.com/pkg/profile v1.5.0 h1:042Buzk+NhDI+DeSAA62RwJL8VAuZUMQZUjCsRz1Mug=
+github.com/pkg/profile v1.5.0/go.mod h1:qBsxPvzyUincmltOk6iyRVxHYg4adc0OFOv72ZdLa18=
 github.com/traefik/yaegi v0.9.7 h1:CbeKjEhy3DoSC8xC4TQF2Mhmd7u3Cjqluz1//x6Vtcs=
 github.com/traefik/yaegi v0.9.7/go.mod h1:FAYnRlZyuVlEkvnkHq3bvJ1lW5be6XuwgLdkYgYG6Lk=

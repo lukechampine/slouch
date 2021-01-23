@@ -10,19 +10,42 @@ import (
 var singleCharTokens = map[byte]token.Kind{
 	'=':  token.Assign,
 	'+':  token.Plus,
+	'-':  token.Neg,
 	'*':  token.Star,
+	'/':  token.Slash,
 	',':  token.Comma,
+	'.':  token.Dot,
+	':':  token.Colon,
 	'(':  token.Lparen,
 	')':  token.Rparen,
 	'[':  token.Lbrace,
 	']':  token.Rbrace,
+	'<':  token.Less,
+	'>':  token.Greater,
 	'|':  token.Pipe,
 	'$':  token.Buck,
+	'_':  token.Hole,
 	'\n': token.Newline,
 }
 
 func isSingleCharToken(c byte) bool {
 	_, ok := singleCharTokens[c]
+	return ok
+}
+
+var doubleCharTokens = map[string]token.Kind{
+	"==": token.Equals,
+	"!=": token.NotEquals,
+	"<=": token.LessEquals,
+	">=": token.GreaterEquals,
+	"-<": token.Splat,
+	"|<": token.PipeSplat,
+	"-:": token.Rep,
+	"|:": token.PipeRep,
+}
+
+func isDoubleCharToken(s string) bool {
+	_, ok := doubleCharTokens[s]
 	return ok
 }
 
@@ -37,29 +60,34 @@ func Tokenize(s string) (ts []token.Token) {
 		case c == ' ', c == '\t':
 			// skip
 
-		case isSingleCharToken(c):
-			if c == '=' && i+1 < len(s) && s[i+1] == '=' {
-				lit := string(s[i : i+2])
+		case c == ';':
+			// comment; skip until \n
+			i++
+			for i < len(s) && s[i] != '\n' {
 				i++
-				ts = append(ts, token.Token{
-					Kind: token.Equals,
-					Lit:  lit,
-				})
-				continue
 			}
-			if c == '-' && i+1 < len(s) && isDigit(s[i+1]) {
-				// negative number, not minus
-				num := string(s[i])
-				for i++; i < len(s) && isDigit(s[i]); i++ {
-					num += string(s[i])
-				}
-				i--
-				ts = append(ts, token.Token{
-					Kind: token.Int,
-					Lit:  num,
-				})
-				continue
+
+		case i+1 < len(s) && isDoubleCharToken(s[i:i+2]):
+			lit := string(s[i : i+2])
+			ts = append(ts, token.Token{
+				Kind: doubleCharTokens[lit],
+				Lit:  lit,
+			})
+			i++
+
+		case c == '-' && i+1 < len(s) && isDigit(s[i+1]):
+			// negative number
+			num := string(s[i])
+			for i++; i < len(s) && isDigit(s[i]); i++ {
+				num += string(s[i])
 			}
+			i--
+			ts = append(ts, token.Token{
+				Kind: token.Int,
+				Lit:  num,
+			})
+
+		case isSingleCharToken(c):
 			ts = append(ts, token.Token{
 				Kind: singleCharTokens[c],
 				Lit:  string(c),
@@ -91,14 +119,25 @@ func Tokenize(s string) (ts []token.Token) {
 				Lit:  num,
 			})
 
-		// identifier (or snippet)
+		// identifier (or special infix, or snippet)
 		case isLetter(c):
 			word := ""
 			for i < len(s) && isIdent(s[i]) {
 				word += string(s[i])
 				i++
 			}
-			if word == "vvv" {
+			switch word {
+			case "and":
+				ts = append(ts, token.Token{
+					Kind: token.And,
+					Lit:  word,
+				})
+			case "or":
+				ts = append(ts, token.Token{
+					Kind: token.Or,
+					Lit:  word,
+				})
+			case "vvv":
 				// scan until ^^^
 				if stop := strings.Index(s[i:], "^^^"); stop == -1 {
 					ts = append(ts, token.Token{
@@ -113,7 +152,7 @@ func Tokenize(s string) (ts []token.Token) {
 					})
 					i += stop + 3
 				}
-			} else {
+			default:
 				ts = append(ts, token.Token{
 					Kind: token.Ident,
 					Lit:  word,

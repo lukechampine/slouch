@@ -8,6 +8,10 @@ import (
 	"lukechampine.com/slouch/token"
 )
 
+// + has LOWER precedence than *
+//
+// HIGHER precedence means binds "more tightly"
+
 const (
 	precLowest = iota
 	precPipe
@@ -17,36 +21,44 @@ const (
 	precAssign
 	precEquals
 	precCmp
-	precPlus
+	precSum
 	precProd
 	precNeg
 	precCall
-	precIndex
+	precSplat
+	precDot
 )
 
 var precedences = map[token.Kind]int{
-	token.Ident: precCall,
-	token.Pipe:  precPipe,
+	token.Pipe:      precPipe,
+	token.PipeSplat: precPipe,
+	token.PipeRep:   precPipe,
 	// token.OR:     OR,
 	// token.AND:    AND,
 	// token.NOT:    NOT,
 	// token.BIND:   ASSIGN,
 	// token.ASSIGN: ASSIGN,
-	token.Equals: precEquals,
-	// token.NEQ:    EQUALS,
-	// token.LT:     LESSGREATER,
-	// token.GT:     LESSGREATER,
-	// token.LTE:    LESSGREATER,
-	// token.GTE:    LESSGREATER,
+	token.Equals:        precEquals,
+	token.NotEquals:     precEquals,
+	token.Less:          precCmp,
+	token.Greater:       precCmp,
+	token.LessEquals:    precCmp,
+	token.GreaterEquals: precCmp,
+	token.And:           precAnd,
+	token.Or:            precOr,
 
-	token.Plus: precPlus,
+	token.Plus:  precSum,
+	token.Neg:   precSum,
+	token.Star:  precProd,
+	token.Slash: precProd,
+	token.Splat: precSplat,
+	token.Rep:   precSplat,
+	token.Dot:   precDot,
 	// token.MINUS:    SUM,
 	// token.DIVIDE:   PRODUCT,
 	// token.MULTIPLY: PRODUCT,
 	// token.MODULO:   PRODUCT,
 	// token.LPAREN:   CALL,
-	// token.LBRACKET: INDEX,
-	// token.DOT:      INDEX,
 }
 
 // Parse parses a sequence of tokens as a program.
@@ -71,19 +83,41 @@ func newParser(ts []token.Token) *Parser {
 		token.Int:    p.parseInteger,
 		token.String: p.parseString,
 		//token.Bang:    p.parsePrefixOp,
-		token.Lbrace: p.parseArray,
-		token.Lparen: p.parseParens,
-		token.Plus:   p.parsePrefixInfixOp,
-		token.Star:   p.parsePrefixInfixOp,
-		token.Equals: p.parsePrefixInfixOp,
+		token.Lbrace:        p.parseArray,
+		token.Lparen:        p.parseParens,
+		token.Plus:          p.parsePrefixInfixOp,
+		token.Star:          p.parsePrefixInfixOp,
+		token.Slash:         p.parsePrefixInfixOp,
+		token.Equals:        p.parsePrefixInfixOp,
+		token.NotEquals:     p.parsePrefixInfixOp,
+		token.Less:          p.parsePrefixInfixOp,
+		token.Greater:       p.parsePrefixInfixOp,
+		token.LessEquals:    p.parsePrefixInfixOp,
+		token.GreaterEquals: p.parsePrefixInfixOp,
+		token.And:           p.parsePrefixInfixOp,
+		token.Or:            p.parsePrefixInfixOp,
+		token.Dot:           p.parsePrefixInfixOp,
+		token.Hole:          p.parseHole,
+		token.Splat:         p.parseSplat,
+		token.Rep:           p.parseRep,
 	}
 	p.infixFns = map[token.Kind]func(ast.Expr) ast.Expr{
-		token.Pipe:   p.parsePipe,
-		token.Plus:   p.parseInfixOp,
-		token.Star:   p.parseInfixOp,
-		token.Equals: p.parseInfixOp,
-		//token.PipeEquals: p.parseAssignment,
-		//token.Minus:      p.parseInfixOp,
+		token.Pipe:          p.parsePipe,
+		token.PipeSplat:     p.parsePipe,
+		token.PipeRep:       p.parsePipe,
+		token.Plus:          p.parseInfixOp,
+		token.Neg:           p.parseInfixOp,
+		token.Star:          p.parseInfixOp,
+		token.Slash:         p.parseInfixOp,
+		token.Equals:        p.parseInfixOp,
+		token.NotEquals:     p.parseInfixOp,
+		token.Less:          p.parseInfixOp,
+		token.Greater:       p.parseInfixOp,
+		token.LessEquals:    p.parseInfixOp,
+		token.GreaterEquals: p.parseInfixOp,
+		token.And:           p.parseInfixOp,
+		token.Or:            p.parseInfixOp,
+		token.Dot:           p.parseInfixOp,
 	}
 	return p
 }
@@ -172,6 +206,7 @@ func (p *Parser) parseStmt() (s ast.Stmt) {
 		// any other token indicates an expression statement
 		s = ast.ExprStmt{X: p.parseExpr(precLowest)}
 	}
+	//fmt.Println(ast.Print(s))
 	// all statements should end in a newline
 	p.advance()
 	p.consume(token.Newline)
@@ -191,11 +226,29 @@ func (p *Parser) parseExpr(prec int) ast.Expr {
 	t := p.cur()
 	pfn, ok := p.prefixFns[t.Kind]
 	if !ok {
-		panic(fmt.Sprintln("no prefix for", t.Kind))
+		panic(fmt.Sprintf("no prefix for %v", t.String()))
 	}
 	e := pfn()
 
-	for !p.peekIs(token.Newline, token.EOF) && prec < precedences[p.peek().Kind] {
+	// if there are args, this is a fn call
+	//
+	// TODO: can't shake the feeling that this is buggy...
+	if prec < precCall {
+		var args []ast.Expr
+		for p.peekIs(token.Hole, token.Ident, token.Int, token.String, token.Lbrace, token.Lparen, token.Splat, token.Rep) {
+			p.advance()
+			args = append(args, p.parseExpr(precCall))
+		}
+		if len(args) > 0 {
+			e = ast.FnCall{
+				Token: t,
+				Fn:    e,
+				Args:  args,
+			}
+		}
+	}
+
+	for !p.peekIs(token.Newline, token.EOF, token.Illegal) && prec < precedences[p.peek().Kind] {
 		ifn, ok := p.infixFns[p.peek().Kind]
 		if !ok {
 			break
@@ -203,53 +256,51 @@ func (p *Parser) parseExpr(prec int) ast.Expr {
 		p.advance()
 		e = ifn(e)
 	}
+
 	return e
 }
 
-func (p *Parser) parseInteger() ast.Expr {
+func (p *Parser) parseInteger() ast.Expr    { return ast.Integer{Token: p.cur(), Value: p.cur().Lit} }
+func (p *Parser) parseString() ast.Expr     { return ast.String{Token: p.cur(), Value: p.cur().Lit} }
+func (p *Parser) parseIdentifier() ast.Expr { return ast.Ident{Token: p.cur(), Name: p.cur().Lit} }
+func (p *Parser) parseHole() ast.Expr       { return ast.Hole{Token: p.cur()} }
+
+func (p *Parser) parseSplat() ast.Expr {
 	t := p.cur()
-	return ast.Integer{Token: t, Value: t.Lit}
+	p.advance()
+	return ast.Splat{Token: t, Fn: p.parseExpr(precSplat)}
 }
 
-func (p *Parser) parseString() ast.Expr {
+func (p *Parser) parseRep() ast.Expr {
 	t := p.cur()
-	return ast.String{Token: t, Value: t.Lit}
-}
-
-func (p *Parser) parseIdentifier() ast.Expr {
-	t := p.cur()
-	i := ast.Ident{Token: t, Name: t.Lit}
-
-	// if there are args, this is a fn call
-	var args []ast.Expr
-	for p.peekIs(token.Ident, token.Int, token.String, token.Lbrace, token.Lparen) {
-		p.advance()
-		args = append(args, p.parseExpr(precCall))
-	}
-	if len(args) > 0 {
-		return ast.FnCall{
-			Token: t,
-			Fn:    i,
-			Args:  args,
-		}
-	}
-	return i
+	p.advance()
+	return ast.Rep{Token: t, Fn: p.parseExpr(precSplat)}
 }
 
 func (p *Parser) parseArray() ast.Expr {
+	t := p.cur()
 	p.advance() // advance past [
-	var a ast.Array
+	var elems []ast.Expr
+	var assoc bool
+	var danglingKey bool
 	for !p.curIs(token.Rbrace, token.EOF) {
-		e := p.parseExpr(precLowest)
-		a.Elems = append(a.Elems, e)
+		elems = append(elems, p.parseExpr(precLowest))
 		p.advance()
-		if !p.curIs(token.Comma) {
+		if p.curIs(token.Colon) {
+			assoc = true
+		} else {
+			danglingKey = danglingKey || len(elems)%2 != 0
+		}
+		if !p.curIs(token.Comma, token.Colon) {
 			break
 		}
 		p.advance()
 	}
 	p.expect(token.Rbrace)
-	return a
+	if assoc && danglingKey {
+		panic("dangling key in assoc")
+	}
+	return ast.Array{Token: t, Elems: elems, Assoc: assoc}
 }
 
 func (p *Parser) parseParens() ast.Expr {
@@ -281,9 +332,9 @@ func (p *Parser) parsePrefixInfixOp() ast.Expr {
 		Op:    t.Kind,
 		Left:  nil,
 	}
-	if !p.peekIs(token.Rparen) {
+	if !p.peekIs(token.Illegal, token.EOF, token.Newline, token.Rparen, token.Pipe) { // TODO: kind of a hack...
 		p.advance()
-		e.Right = p.parseExpr(precLowest) // TODO: wrong?
+		e.Right = p.parseExpr(precedences[t.Kind]) // TODO: wrong?
 	}
 	return e
 }
@@ -307,46 +358,6 @@ func (p *Parser) parsePipe(left ast.Expr) ast.Expr {
 		Left:  left,
 	}
 	p.advance()
-	e.Right = p.parseExpr(precedences[t.Kind])
+	e.Right = p.parseExpr(precPipe)
 	return e
 }
-
-/*
-func (p *Parser) parseExpr(prec int) ast.Expr {
-	p.consumeWhitespace()
-	switch t := p.cur(); t.Kind {
-	case token.Lbrace:
-		var a ast.Array
-		p.advance()
-		for len(p.ts) > 0 && p.cur().Kind != token.Rbrace {
-			a.Elems = append(a.Elems, p.parseExpr())
-			p.advance()
-			p.expect(token.Comma, token.Rbrace)
-			if p.cur().Kind == token.Comma {
-				p.advance()
-			}
-		}
-		return a
-	case token.Lparen:
-		p.advance()
-		e := p.parseExpr()
-		p.advance()
-		p.expect(token.Rparen)
-		return e
-	default:
-		panic(t)
-	}
-}
-
-func (p *Parser) parseFnArgs() []ast.Expr {
-	var args []ast.Expr
-	for {
-		switch p.peek().Kind {
-		case token.EOF, token.Newline, token.Rparen, token.Rbrace, token.Pipe, token.Buck: // TODO: probably more
-			return args
-		}
-		p.advance()
-		args = append(args, p.parseExpr())
-	}
-}
-*/

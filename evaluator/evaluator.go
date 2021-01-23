@@ -8,90 +8,14 @@ import (
 	gotoken "go/token"
 	"reflect"
 	"strconv"
-	"strings"
+	"sync"
 
 	"lukechampine.com/slouch/ast"
+	"lukechampine.com/slouch/token"
 
 	"github.com/traefik/yaegi/interp"
 	"github.com/traefik/yaegi/stdlib"
 )
-
-type Value interface {
-	isValue()
-	fmt.Stringer
-}
-
-type IntegerValue struct {
-	i int64 // TODO: make this arbitrary-precision
-}
-
-func (iv IntegerValue) isValue()       {}
-func (iv IntegerValue) String() string { return strconv.FormatInt(iv.i, 10) }
-
-type StringValue struct {
-	s string
-}
-
-func (sv StringValue) isValue()       {}
-func (sv StringValue) String() string { return strconv.Quote(sv.s) }
-
-type BoolValue struct {
-	b bool
-}
-
-func (bv BoolValue) isValue()       {}
-func (bv BoolValue) String() string { return strconv.FormatBool(bv.b) }
-
-type ArrayValue struct {
-	elems []Value
-}
-
-func (av ArrayValue) isValue() {}
-func (av ArrayValue) String() string {
-	strs := make([]string, len(av.elems))
-	for i := range strs {
-		strs[i] = av.elems[i].String()
-	}
-	return "[" + strings.Join(strs, ", ") + "]"
-}
-
-type PartialValue struct {
-	fn   Value
-	args []Value // missing values represented by nil
-}
-
-func (pv PartialValue) have() int {
-	n := 0
-	for _, a := range pv.args {
-		if a != nil {
-			n++
-		}
-	}
-	return n
-}
-
-func (pv PartialValue) isValue() {}
-func (pv PartialValue) String() string {
-	return fmt.Sprintf("<partial (%d-adic, have %v)>", len(pv.args), pv.have())
-}
-
-type BuiltinValue struct {
-	name  string
-	nargs int
-	fn    func(*Environment, []Value) Value
-}
-
-func (bv BuiltinValue) isValue() {}
-func (bv BuiltinValue) String() string {
-	return fmt.Sprintf("<builtin %q (%d-adic)>", bv.name, bv.nargs)
-}
-
-type GoValue struct {
-	name string
-}
-
-func (gv GoValue) isValue()       {}
-func (gv GoValue) String() string { return gv.name }
 
 type Environment struct {
 	gointerp *interp.Interpreter
@@ -105,7 +29,7 @@ func (env *Environment) addFuncSymbols(snippet string) {
 	}
 	for _, dec := range f.Decls {
 		if fn, ok := dec.(*goast.FuncDecl); ok {
-			env.idents[fn.Name.Name] = GoValue{fn.Name.Name}
+			env.idents[fn.Name.Name] = &GoValue{fn.Name.Name}
 			// TODO: include fn metadata (nargs)
 			// TODO: maybe just convert to FnValue?
 		}
@@ -114,7 +38,7 @@ func (env *Environment) addFuncSymbols(snippet string) {
 }
 
 func (env *Environment) Run(p ast.Program, input string) error {
-	env.idents["input"] = StringValue{input}
+	env.idents["input"] = makeString(input)
 	for _, n := range p.Stmts {
 		switch n := n.(type) {
 		case ast.SnippetStmt:
@@ -127,16 +51,21 @@ func (env *Environment) Run(p ast.Program, input string) error {
 			// partially-applied function missing its last argument, supply
 			// input as the final argument
 			v := env.Eval(n.X)
-			if pv, ok := v.(PartialValue); ok && n.Name.Name == "input" {
-				v = env.apply(pv.fn, []Value{env.idents["input"]})
+			if pv, ok := v.(*PartialValue); ok && pv.need() == 1 && n.Name.Name == "input" {
+				v = env.apply(pv.fn, env.idents["input"])
+			}
+			if iv, ok := v.(*IteratorValue); ok {
+				// variables should always be arrays, not iterators, because we
+				// don't want to consume them multiple times
+				v = builtinCollect(iv)
 			}
 			env.idents[n.Name.Name] = v
 		case ast.ExprStmt:
 			// if the result is a partially-applied function missing its last argument,
 			// supply input as the final argument
 			v := env.Eval(n.X)
-			if pv, ok := v.(PartialValue); ok {
-				v = env.apply(pv.fn, []Value{env.idents["input"]})
+			if pv, ok := v.(*PartialValue); ok && pv.need() == 1 {
+				v = env.apply(pv, env.idents["input"])
 			}
 			fmt.Println(v)
 		default:
@@ -149,71 +78,210 @@ func (env *Environment) Run(p ast.Program, input string) error {
 func (env *Environment) Eval(e ast.Expr) Value {
 	switch e := e.(type) {
 	case ast.String:
-		return StringValue{e.Value}
+		return makeString(e.Value)
 	case ast.Integer:
 		i, _ := strconv.ParseInt(e.Value, 10, 64) // later: handle bigints
-		return IntegerValue{i}
+		return makeInteger(i)
+	case ast.Hole:
+		return HoleValue{}
 	case ast.Ident:
-		if v, ok := env.idents[e.Name]; ok {
-			if bv, ok := v.(BuiltinValue); ok {
-				return PartialValue{
-					fn:   bv,
-					args: make([]Value, bv.nargs),
+		if e.Name == "true" || e.Name == "false" {
+			return makeBool(e.Name == "true")
+		} else if v, ok := env.idents[e.Name]; ok {
+			if bv, ok := v.(*BuiltinValue); ok {
+				if bv.nargs == 0 {
+					return env.apply(bv)
 				}
+				return makePartial(bv, make([]Value, bv.nargs))
 			}
 			return v
 		}
 		panic("unknown identifier " + strconv.Quote(e.Name))
 	case ast.InfixOp:
-		// convert to partial
-		pv := PartialValue{
-			fn:   infixFns[e.Op],
-			args: make([]Value, 2),
-		}
+		var l, r Value
 		if e.Left != nil {
-			pv.args[0] = env.Eval(e.Left)
+			l = env.Eval(e.Left)
+			// short circuit and/or
+			if _, lpartial := l.(*PartialValue); !lpartial {
+				if e.Token.Kind == token.And && !internalTruthy(l) {
+					return makeBool(false)
+				} else if e.Token.Kind == token.Or && internalTruthy(l) {
+					return makeBool(true)
+				}
+			}
 		}
 		if e.Right != nil {
-			pv.args[1] = env.Eval(e.Right)
+			r = env.Eval(e.Right)
 		}
-		if pv.have() == len(pv.args) {
-			return env.apply(pv.fn, pv.args)
+
+		// if one or both args are partial values, return a partial that
+		// inherits their holes
+		lpv, lpartial := l.(*PartialValue)
+		rpv, rpartial := r.(*PartialValue)
+		if lpartial || rpartial {
+			var pvargs []Value
+			if lpartial {
+				pvargs = append(pvargs, lpv.args...)
+			} else {
+				pvargs = append(pvargs, l)
+			}
+			if rpartial {
+				pvargs = append(pvargs, rpv.args...)
+			} else {
+				pvargs = append(pvargs, r)
+			}
+			fn := &BuiltinValue{
+				name:  "exprpartial",
+				nargs: len(pvargs),
+				fn: func(env *Environment, args []Value) Value {
+					if lpartial {
+						l, args = env.apply(lpv.fn, args[:len(lpv.args)]...), args[len(lpv.args):]
+					} else {
+						l, args = args[0], args[1:]
+					}
+
+					// short circuit and/or
+					if _, lpartial := l.(*PartialValue); !lpartial {
+						if e.Token.Kind == token.And && !internalTruthy(l) {
+							return makeBool(false)
+						} else if e.Token.Kind == token.Or && internalTruthy(l) {
+							return makeBool(true)
+						}
+					}
+
+					if rpartial {
+						r, args = env.apply(rpv.fn, args[:len(rpv.args)]...), args[len(rpv.args):]
+					} else {
+						r, args = args[0], args[1:]
+					}
+					return env.apply(infixFns[e.Op], l, r)
+				},
+			}
+			return makePartial(fn, pvargs)
 		}
-		return pv
+		// otherwise, just evaluate immediately
+		return env.apply(infixFns[e.Op], l, r)
 	case ast.FnCall:
 		fn := env.Eval(e.Fn)
 		args := make([]Value, len(e.Args))
 		for i, a := range e.Args {
-			// TODO: check for _ here
 			args[i] = env.Eval(a)
 		}
-		return env.apply(fn, args)
+		return env.apply(fn, args...)
+	case ast.Splat:
+		// turn n.Fn into a function that takes an array
+		fn := env.Eval(e.Fn)
+		sfn := &BuiltinValue{
+			name:  "splat",
+			nargs: 1,
+			fn: func(env *Environment, args []Value) Value {
+				a, ok := args[0].(*ArrayValue)
+				if !ok {
+					panic(fmt.Sprintf("splat expected array, got %T", args[0]))
+				}
+				return env.apply(fn, a.elems...)
+			},
+		}
+		return makePartial(sfn, make([]Value, 1))
+	case ast.Rep:
+		// turn n.Fn into a function that takes 1 argument and replicates it as
+		// many times as necessary
+		fn := env.Eval(e.Fn)
+		rfn := &BuiltinValue{
+			name:  "rep",
+			nargs: 1,
+			fn: func(env *Environment, args []Value) Value {
+				if len(args) != 1 {
+					panic(fmt.Sprintf("rep expected exactly 1 argument, got %v", len(args)))
+				}
+				var nargs int
+				switch fn := fn.(type) {
+				case *BuiltinValue:
+					nargs = fn.nargs
+				case *PartialValue:
+					nargs = fn.need()
+				default:
+					panic(fmt.Sprintf("rep expected function, got %T", fn))
+				}
+				for len(args) < nargs {
+					args = append(args, args[0])
+				}
+				return env.apply(fn, args...)
+			},
+		}
+		return makePartial(rfn, make([]Value, 1))
 	case ast.Pipe:
 		l, r := env.Eval(e.Left), env.Eval(e.Right)
-		switch r := r.(type) {
-		case PartialValue:
-			if pv, ok := l.(PartialValue); ok {
-				// whole expression becomes a partial
-				return PartialValue{
-					fn: BuiltinValue{
-						name:  "pipepartial",
-						nargs: len(pv.args),
-						fn: func(env *Environment, args []Value) Value {
-							return env.apply(r, []Value{env.apply(pv.fn, args)})
-						},
-					},
-					args: pv.args,
-				}
+		switch e.Token.Kind {
+		case token.PipeSplat:
+			// splat r
+			fn := r
+			sfn := &BuiltinValue{
+				name:  "pipesplat",
+				nargs: 1,
+				fn: func(env *Environment, args []Value) Value {
+					a, ok := args[0].(*ArrayValue)
+					if !ok {
+						panic(fmt.Sprintf("splat expected array, got %T", args[0]))
+					}
+					return env.apply(fn, a.elems...)
+				},
 			}
+			return makePartial(sfn, make([]Value, 1))
+		case token.PipeRep:
+			// rep r
+			fn := r
+			rfn := &BuiltinValue{
+				name:  "piperep",
+				nargs: 1,
+				fn: func(env *Environment, args []Value) Value {
+					if len(args) != 1 {
+						panic(fmt.Sprintf("rep expected exactly 1 argument, got %v", len(args)))
+					}
+					var nargs int
+					switch fn := fn.(type) {
+					case *BuiltinValue:
+						nargs = fn.nargs
+					case *PartialValue:
+						nargs = fn.need()
+					default:
+						panic(fmt.Sprintf("rep expected function, got %T", fn))
+					}
+					for len(args) < nargs {
+						args = append(args, args[0])
+					}
+					return env.apply(fn, args...)
+				},
+			}
+			r = makePartial(rfn, make([]Value, 1))
+		}
 
-			return env.apply(r, []Value{l})
+		switch r := r.(type) {
+		case *PartialValue:
+			if pv, ok := l.(*PartialValue); ok {
+				// whole expression becomes a partial
+				pfn := &BuiltinValue{
+					name:  "pipepartial",
+					nargs: len(pv.args),
+					fn: func(env *Environment, args []Value) Value {
+						l = env.apply(pv.fn, args...)
+						return env.apply(r, l)
+					},
+				}
+				return makePartial(pfn, pv.args)
+			}
+			return env.apply(r, l)
 		default:
 			panic(fmt.Sprintf("unhandled pipe RHS %T", r))
 		}
 	case ast.Array:
-		a := ArrayValue{make([]Value, len(e.Elems))}
-		for i := range a.elems {
-			a.elems[i] = env.Eval(e.Elems[i])
+		elems := make([]Value, len(e.Elems))
+		for i := range elems {
+			elems[i] = env.Eval(e.Elems[i])
+		}
+		a := makeArray(elems)
+		if e.Assoc {
+			return builtinAssoc(a)
 		}
 		return a
 	default:
@@ -221,39 +289,41 @@ func (env *Environment) Eval(e ast.Expr) Value {
 	}
 }
 
-func (env *Environment) apply(fn Value, args []Value) Value {
+func (env *Environment) apply(fn Value, args ...Value) Value {
 	switch fn := fn.(type) {
-	case BuiltinValue:
-		// TODO: check for _ args
-		if len(args) < fn.nargs {
-			pv := PartialValue{
-				fn:   fn,
-				args: make([]Value, fn.nargs),
-			}
-			copy(pv.args, args)
-			return pv
-		} else if len(args) > fn.nargs {
-			panic(fmt.Sprintf("%v expected %v args, got %v", fn.name, fn.nargs, len(args)))
+	case *BuiltinValue:
+		if len(args) > fn.nargs {
+			panic(fmt.Sprintf("too many arguments supplied to function: %v expects %v, got %v", fn.name, fn.nargs, len(args)))
+		} else if len(args) < fn.nargs {
+			pargs := make([]Value, fn.nargs)
+			copy(pargs, args)
+			return makePartial(fn, pargs)
 		}
 		return fn.fn(env, args)
 
-	case PartialValue:
+	case *PartialValue:
 		if fn.have()+len(args) > len(fn.args) {
 			panic(fmt.Sprintf("too many arguments supplied to function: %v expects %v, got %v", fn.fn, len(fn.args), fn.have()+len(args)))
 		}
-		pv := fn
-		pv.args = append([]Value(nil), fn.args...)
-		for i := range pv.args {
-			if pv.args[i] == nil && len(args) > 0 {
-				pv.args[i], args = args[0], args[1:]
+		pargs := append([]Value(nil), fn.args...)
+		for i := range pargs {
+			if isHole(pargs[i]) && len(args) > 0 {
+				pargs[i], args = args[0], args[1:]
 			}
 		}
+		pv := makePartial(fn, pargs)
 		if pv.have() < len(pv.args) {
 			return pv // still a partial
 		}
-		return env.apply(pv.fn, pv.args)
+		return env.apply(fn.fn, pv.args...)
 
-	case GoValue:
+	case HoleValue:
+		if len(args) != 1 {
+			panic(fmt.Sprintf("hole expects a single argument, got %v", len(args)))
+		}
+		return args[0]
+
+	case *GoValue:
 		// TODO: need to handle arg passing
 		v, err := env.gointerp.Eval(fn.name + "()")
 		if err != nil {
@@ -261,15 +331,22 @@ func (env *Environment) apply(fn Value, args []Value) Value {
 		}
 		switch v.Kind() {
 		case reflect.Int:
-			return IntegerValue{v.Int()}
+			return makeInteger(v.Int())
 		case reflect.String:
-			return StringValue{v.String()}
+			return makeString(v.String())
 		default:
 			panic("unhandled return type")
 		}
 	default:
 		panic(fmt.Sprintf("unhandled fn type: %T", fn))
 	}
+}
+
+var valueSlicePool = sync.Pool{
+	New: func() interface{} {
+		args := make([]Value, 0, 100)
+		return &args
+	},
 }
 
 func New() *Environment {

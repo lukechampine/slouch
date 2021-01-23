@@ -53,18 +53,54 @@ func (s String) isNode()        {}
 func (s String) isExpr()        {}
 func (s String) String() string { return strconv.Quote(s.Value) }
 
+// e.g. "_"
+type Hole struct {
+	Token token.Token
+}
+
+func (h Hole) isNode()        {}
+func (h Hole) isExpr()        {}
+func (h Hole) String() string { return "_" }
+
+// e.g. "-< foo"
+type Splat struct {
+	Token token.Token
+	Fn    Expr
+}
+
+func (s Splat) isNode()        {}
+func (s Splat) isExpr()        {}
+func (s Splat) String() string { return "-< " + s.Fn.String() }
+
+// e.g. "-: foo"
+type Rep struct {
+	Token token.Token
+	Fn    Expr
+}
+
+func (r Rep) isNode()        {}
+func (r Rep) isExpr()        {}
+func (r Rep) String() string { return "-: " + r.Fn.String() }
+
 // e.g. [ 1 2 3 ]
 type Array struct {
 	Token token.Token
 	Elems []Expr
+	Assoc bool
 }
 
 func (a Array) isNode() {}
 func (a Array) isExpr() {}
 func (a Array) String() string {
 	strs := make([]string, len(a.Elems))
-	for i, t := range a.Elems {
-		strs[i] = t.String()
+	if a.Assoc {
+		for i := 0; i < len(a.Elems); i += 2 {
+			strs = append(strs, fmt.Sprintf("%v:%v", a.Elems[i], a.Elems[i+1]))
+		}
+	} else {
+		for i, t := range a.Elems {
+			strs[i] = t.String()
+		}
 	}
 	return "[ " + strings.Join(strs, " ") + " ]"
 }
@@ -76,9 +112,20 @@ type InfixOp struct {
 	Left, Right Expr
 }
 
-func (i InfixOp) isNode()        {}
-func (i InfixOp) isExpr()        {}
-func (i InfixOp) String() string { return i.Left.String() + " " + i.Token.Lit + " " + i.Right.String() }
+func (i InfixOp) isNode() {}
+func (i InfixOp) isExpr() {}
+func (i InfixOp) String() string {
+	switch {
+	case i.Left == nil && i.Right == nil:
+		return fmt.Sprintf("(%v)", i.Token)
+	case i.Left == nil:
+		return fmt.Sprintf("(%v %v)", i.Token, i.Right)
+	case i.Right == nil:
+		return fmt.Sprintf("(%v %v)", i.Left, i.Token)
+	default:
+		return fmt.Sprintf("%v %v %v", i.Left, i.Token, i.Right)
+	}
+}
 
 // e.g. { x * 2 }
 type Lambda struct {
@@ -178,6 +225,8 @@ func recPrint(b *strings.Builder, indent int, n Node) {
 		b.WriteByte('\n')
 	}
 	switch n := n.(type) {
+	case nil:
+		writeLine("<nil>")
 	case Program:
 		writeLine("PROGRAM:")
 		for _, e := range n.Stmts {
@@ -189,6 +238,8 @@ func recPrint(b *strings.Builder, indent int, n Node) {
 		writeLine("STRING: " + n.String())
 	case Ident:
 		writeLine("IDENT: " + n.String())
+	case Hole:
+		writeLine("HOLE")
 	case Array:
 		writeLine("ARRAY:")
 		for _, e := range n.Elems {
@@ -208,6 +259,9 @@ func recPrint(b *strings.Builder, indent int, n Node) {
 		for _, e := range n.Args {
 			recPrint(b, indent+1, e)
 		}
+	case Splat:
+		writeLine("SPLAT:")
+		recPrint(b, indent+1, n.Fn)
 	case Pipe:
 		writeLine("PIPE:")
 		recPrint(b, indent+1, n.Left)
@@ -223,6 +277,6 @@ func recPrint(b *strings.Builder, indent int, n Node) {
 		recPrint(b, indent+1, n.Name)
 		recPrint(b, indent+1, n.X)
 	default:
-		//panic(fmt.Sprintf("unknown node type %T", n))
+		panic(fmt.Sprintf("unknown node type %T", n))
 	}
 }
