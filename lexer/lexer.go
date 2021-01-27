@@ -13,6 +13,7 @@ var singleCharTokens = map[byte]token.Kind{
 	'-':  token.Neg,
 	'*':  token.Star,
 	'/':  token.Slash,
+	'%':  token.Mod,
 	',':  token.Comma,
 	'.':  token.Dot,
 	':':  token.Colon,
@@ -20,6 +21,8 @@ var singleCharTokens = map[byte]token.Kind{
 	')':  token.Rparen,
 	'[':  token.Lbrace,
 	']':  token.Rbrace,
+	'{':  token.Lbracket,
+	'}':  token.Rbracket,
 	'<':  token.Less,
 	'>':  token.Greater,
 	'|':  token.Pipe,
@@ -38,6 +41,7 @@ var doubleCharTokens = map[string]token.Kind{
 	"!=": token.NotEquals,
 	"<=": token.LessEquals,
 	">=": token.GreaterEquals,
+	"%?": token.DivisibleBy,
 	"-<": token.Splat,
 	"|<": token.PipeSplat,
 	"-:": token.Rep,
@@ -103,7 +107,7 @@ func Tokenize(s string) (ts []token.Token) {
 			}
 			ts = append(ts, token.Token{
 				Kind: token.String,
-				Lit:  str,
+				Lit:  `"` + str + `"`,
 			})
 
 		// number

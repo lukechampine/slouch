@@ -37,7 +37,18 @@ func (env *Environment) addFuncSymbols(snippet string) {
 	}
 }
 
-func (env *Environment) Run(p ast.Program, input string) error {
+func (env *Environment) newScope() *Environment {
+	idents := make(map[string]Value, len(env.idents))
+	for k, v := range env.idents {
+		idents[k] = v
+	}
+	return &Environment{
+		gointerp: env.gointerp,
+		idents:   idents,
+	}
+}
+
+func (env *Environment) Run(p ast.Program, input string, output func(Value)) error {
 	env.idents["input"] = makeString(input)
 	for _, n := range p.Stmts {
 		switch n := n.(type) {
@@ -52,22 +63,19 @@ func (env *Environment) Run(p ast.Program, input string) error {
 			// input as the final argument
 			v := env.Eval(n.X)
 			if pv, ok := v.(*PartialValue); ok && pv.need() == 1 && n.Name.Name == "input" {
-				v = env.apply(pv.fn, env.idents["input"])
+				v = env.apply1(pv, env.idents["input"])
 			}
-			if iv, ok := v.(*IteratorValue); ok {
-				// variables should always be arrays, not iterators, because we
-				// don't want to consume them multiple times
-				v = builtinCollect(iv)
-			}
-			env.idents[n.Name.Name] = v
+			// variables should always be arrays, not iterators, because we
+			// don't want to consume them multiple times
+			env.idents[n.Name.Name] = internalClone(v)
 		case ast.ExprStmt:
 			// if the result is a partially-applied function missing its last argument,
 			// supply input as the final argument
 			v := env.Eval(n.X)
 			if pv, ok := v.(*PartialValue); ok && pv.need() == 1 {
-				v = env.apply(pv, env.idents["input"])
+				v = env.apply1(pv, env.idents["input"])
 			}
-			fmt.Println(v)
+			output(v)
 		default:
 			panic(fmt.Sprintf("unknown stmt type %T", n))
 		}
@@ -89,14 +97,11 @@ func (env *Environment) Eval(e ast.Expr) Value {
 			return makeBool(e.Name == "true")
 		} else if v, ok := env.idents[e.Name]; ok {
 			if bv, ok := v.(*BuiltinValue); ok {
-				if bv.nargs == 0 {
-					return env.apply(bv)
-				}
-				return makePartial(bv, make([]Value, bv.nargs))
+				return env.apply(bv)
 			}
 			return v
 		}
-		panic("unknown identifier " + strconv.Quote(e.Name))
+		panic(fmt.Sprintf("unknown identifier %q", e.Name))
 	case ast.InfixOp:
 		var l, r Value
 		if e.Left != nil {
@@ -168,32 +173,63 @@ func (env *Environment) Eval(e ast.Expr) Value {
 			args[i] = env.Eval(a)
 		}
 		return env.apply(fn, args...)
+	case ast.Lambda:
+		sfn := &BuiltinValue{
+			name:  "lambda",
+			nargs: e.NumArgs(),
+			fn: func(env *Environment, args []Value) Value {
+				env = env.newScope()
+				for i, c := range "xyzabcdefghijklmnopqrstuvw"[:len(args)] {
+					env.idents[string(c)] = internalClone(args[i])
+				}
+				return env.Eval(e.Body)
+			},
+		}
+		return env.apply(sfn)
 	case ast.Splat:
 		// turn n.Fn into a function that takes an array
 		fn := env.Eval(e.Fn)
-		sfn := &BuiltinValue{
-			name:  "splat",
-			nargs: 1,
-			fn: func(env *Environment, args []Value) Value {
-				a, ok := args[0].(*ArrayValue)
-				if !ok {
-					panic(fmt.Sprintf("splat expected array, got %T", args[0]))
-				}
-				return env.apply(fn, a.elems...)
-			},
-		}
+		sfn := makeBuiltin("splat", func(env *Environment, a *ArrayValue) Value {
+			return env.apply(fn, a.elems...)
+		})
 		return makePartial(sfn, make([]Value, 1))
 	case ast.Rep:
 		// turn n.Fn into a function that takes 1 argument and replicates it as
 		// many times as necessary
 		fn := env.Eval(e.Fn)
-		rfn := &BuiltinValue{
-			name:  "rep",
-			nargs: 1,
-			fn: func(env *Environment, args []Value) Value {
-				if len(args) != 1 {
-					panic(fmt.Sprintf("rep expected exactly 1 argument, got %v", len(args)))
-				}
+		rfn := makeBuiltin("rep", func(env *Environment, v Value) Value {
+			v = internalClone(v)
+			var nargs int
+			switch fn := fn.(type) {
+			case *BuiltinValue:
+				nargs = fn.nargs
+			case *PartialValue:
+				nargs = fn.need()
+			default:
+				panic(fmt.Sprintf("rep expected function, got %T", fn))
+			}
+			args := make([]Value, nargs)
+			for i := range args {
+				args[i] = v
+			}
+			return env.apply(fn, args...)
+		})
+		return makePartial(rfn, make([]Value, 1))
+	case ast.Pipe:
+		l, r := env.Eval(e.Left), env.Eval(e.Right)
+		switch e.Token.Kind {
+		case token.PipeSplat:
+			// splat r
+			fn := r
+			sfn := makeBuiltin("pipesplat", func(env *Environment, a *ArrayValue) Value {
+				return env.apply(fn, a.elems...)
+			})
+			r = makePartial(sfn, make([]Value, 1))
+		case token.PipeRep:
+			// rep r
+			fn := r
+			rfn := makeBuiltin("piperep", func(env *Environment, v Value) Value {
+				v = internalClone(v)
 				var nargs int
 				switch fn := fn.(type) {
 				case *BuiltinValue:
@@ -203,56 +239,12 @@ func (env *Environment) Eval(e ast.Expr) Value {
 				default:
 					panic(fmt.Sprintf("rep expected function, got %T", fn))
 				}
-				for len(args) < nargs {
-					args = append(args, args[0])
+				args := make([]Value, nargs)
+				for i := range args {
+					args[i] = v
 				}
 				return env.apply(fn, args...)
-			},
-		}
-		return makePartial(rfn, make([]Value, 1))
-	case ast.Pipe:
-		l, r := env.Eval(e.Left), env.Eval(e.Right)
-		switch e.Token.Kind {
-		case token.PipeSplat:
-			// splat r
-			fn := r
-			sfn := &BuiltinValue{
-				name:  "pipesplat",
-				nargs: 1,
-				fn: func(env *Environment, args []Value) Value {
-					a, ok := args[0].(*ArrayValue)
-					if !ok {
-						panic(fmt.Sprintf("splat expected array, got %T", args[0]))
-					}
-					return env.apply(fn, a.elems...)
-				},
-			}
-			return makePartial(sfn, make([]Value, 1))
-		case token.PipeRep:
-			// rep r
-			fn := r
-			rfn := &BuiltinValue{
-				name:  "piperep",
-				nargs: 1,
-				fn: func(env *Environment, args []Value) Value {
-					if len(args) != 1 {
-						panic(fmt.Sprintf("rep expected exactly 1 argument, got %v", len(args)))
-					}
-					var nargs int
-					switch fn := fn.(type) {
-					case *BuiltinValue:
-						nargs = fn.nargs
-					case *PartialValue:
-						nargs = fn.need()
-					default:
-						panic(fmt.Sprintf("rep expected function, got %T", fn))
-					}
-					for len(args) < nargs {
-						args = append(args, args[0])
-					}
-					return env.apply(fn, args...)
-				},
-			}
+			})
 			r = makePartial(rfn, make([]Value, 1))
 		}
 
@@ -265,12 +257,12 @@ func (env *Environment) Eval(e ast.Expr) Value {
 					nargs: len(pv.args),
 					fn: func(env *Environment, args []Value) Value {
 						l = env.apply(pv.fn, args...)
-						return env.apply(r, l)
+						return env.apply1(r, l)
 					},
 				}
 				return makePartial(pfn, pv.args)
 			}
-			return env.apply(r, l)
+			return env.apply1(r, l)
 		default:
 			panic(fmt.Sprintf("unhandled pipe RHS %T", r))
 		}
@@ -292,9 +284,15 @@ func (env *Environment) Eval(e ast.Expr) Value {
 func (env *Environment) apply(fn Value, args ...Value) Value {
 	switch fn := fn.(type) {
 	case *BuiltinValue:
-		if len(args) > fn.nargs {
-			panic(fmt.Sprintf("too many arguments supplied to function: %v expects %v, got %v", fn.name, fn.nargs, len(args)))
-		} else if len(args) < fn.nargs {
+		have := 0
+		for _, a := range args {
+			if !isHole(a) {
+				have++
+			}
+		}
+		if have > fn.nargs {
+			panic(fmt.Sprintf("too many arguments supplied to function: %v expects %v, got %v", fn.name, fn.nargs, have))
+		} else if have < fn.nargs {
 			pargs := make([]Value, fn.nargs)
 			copy(pargs, args)
 			return makePartial(fn, pargs)
@@ -342,9 +340,17 @@ func (env *Environment) apply(fn Value, args ...Value) Value {
 	}
 }
 
-var valueSlicePool = sync.Pool{
+func (env *Environment) apply1(fn Value, arg Value) Value {
+	argsptr := argsPool.Get().(*[]Value)
+	defer argsPool.Put(argsptr)
+	args := *argsptr
+	args[0] = arg
+	return env.apply(fn, args...)
+}
+
+var argsPool = sync.Pool{
 	New: func() interface{} {
-		args := make([]Value, 0, 100)
+		args := make([]Value, 1)
 		return &args
 	},
 }

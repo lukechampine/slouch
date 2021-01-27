@@ -14,10 +14,10 @@ type Value interface {
 }
 
 type IntegerValue struct {
-	i int64 // TODO: make this arbitrary-precision
+	i int64
 }
 
-func (iv *IntegerValue) hash() valueHash { return valueHash(iv.String()) }
+func (iv *IntegerValue) hash() valueHash { return valueHash("Integer:" + iv.String()) }
 func (iv *IntegerValue) String() string  { return strconv.FormatInt(iv.i, 10) }
 
 func makeInteger(i int64) *IntegerValue { return &IntegerValue{i: i} }
@@ -26,8 +26,8 @@ type StringValue struct {
 	s string
 }
 
-func (sv *StringValue) hash() valueHash { return valueHash(sv.String()) }
-func (sv *StringValue) String() string  { return strconv.Quote(sv.s) }
+func (sv *StringValue) hash() valueHash { return valueHash("String:" + sv.String()) }
+func (sv *StringValue) String() string  { return sv.s }
 
 func makeString(s string) *StringValue { return &StringValue{s: s} }
 
@@ -35,14 +35,14 @@ type BoolValue struct {
 	b bool
 }
 
-func (bv *BoolValue) hash() valueHash { return valueHash(bv.String()) }
+func (bv *BoolValue) hash() valueHash { return valueHash("Bool:" + bv.String()) }
 func (bv *BoolValue) String() string  { return strconv.FormatBool(bv.b) }
 
 func makeBool(b bool) *BoolValue { return &BoolValue{b: b} }
 
 type HoleValue struct{}
 
-func (hv HoleValue) hash() valueHash { return valueHash(hv.String()) }
+func (hv HoleValue) hash() valueHash { return valueHash("Hole:" + hv.String()) }
 func (hv HoleValue) String() string  { return "_" }
 
 func isHole(v Value) bool {
@@ -54,7 +54,7 @@ type ArrayValue struct {
 	elems []Value
 }
 
-func (av *ArrayValue) hash() valueHash { return valueHash(av.String()) }
+func (av *ArrayValue) hash() valueHash { return valueHash("Array:" + av.String()) }
 func (av *ArrayValue) String() string {
 	strs := make([]string, len(av.elems))
 	for i := range strs {
@@ -70,7 +70,7 @@ type MapValue struct {
 	keys, vals []Value
 }
 
-func (m *MapValue) hash() valueHash { return valueHash(m.String()) }
+func (m *MapValue) hash() valueHash { return valueHash("Map:" + m.String()) }
 func (m *MapValue) String() string {
 	var strs []string
 	for i := range m.keys {
@@ -109,7 +109,7 @@ type IteratorValue struct {
 	infinite bool
 }
 
-func (iv *IteratorValue) hash() valueHash { return valueHash(iv.String()) }
+func (iv *IteratorValue) hash() valueHash { return valueHash("Iterator:" + iv.String()) }
 func (iv *IteratorValue) String() string {
 	if iv.infinite {
 		return "<infinite iterator>"
@@ -134,7 +134,7 @@ func (pv *PartialValue) have() int {
 
 func (pv *PartialValue) need() int { return len(pv.args) - pv.have() }
 
-func (pv *PartialValue) hash() valueHash { return valueHash(pv.String()) }
+func (pv *PartialValue) hash() valueHash { return valueHash("Partial:" + pv.String()) }
 func (pv *PartialValue) String() string {
 	return fmt.Sprintf("<partial (%d-adic, have %v)>", len(pv.args), pv.have())
 }
@@ -147,7 +147,7 @@ type BuiltinValue struct {
 	fn    func(*Environment, []Value) Value
 }
 
-func (bv *BuiltinValue) hash() valueHash { return valueHash(bv.String()) }
+func (bv *BuiltinValue) hash() valueHash { return valueHash("Builtin:" + bv.String()) }
 func (bv *BuiltinValue) String() string {
 	return fmt.Sprintf("<builtin %q (%d-adic)>", bv.name, bv.nargs)
 }
@@ -156,5 +156,16 @@ type GoValue struct {
 	name string
 }
 
-func (gv *GoValue) hash() valueHash { return valueHash(gv.String()) }
+func (gv *GoValue) hash() valueHash { return valueHash("Go:" + gv.String()) }
 func (gv *GoValue) String() string  { return gv.name }
+
+type FuncValue struct {
+	name  string
+	nargs int
+	fn    func(*Environment, []Value) Value
+}
+
+func (fv *FuncValue) hash() valueHash { return valueHash("Func:" + fv.String()) }
+func (fv *FuncValue) String() string {
+	return fmt.Sprintf("<func %q (%d-adic)>", fv.name, fv.nargs)
+}

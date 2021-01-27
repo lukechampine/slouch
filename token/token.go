@@ -19,6 +19,7 @@ const (
 	Greater
 	LessEquals
 	GreaterEquals
+	DivisibleBy
 	And
 	Or
 	Comma
@@ -28,11 +29,14 @@ const (
 	Neg
 	Star
 	Slash
+	Mod
 	Splat
 	Rep
 	Snippet
 	Lbrace
 	Rbrace
+	Lbracket
+	Rbracket
 	Lparen
 	Rparen
 	Pipe
@@ -57,6 +61,7 @@ func (k Kind) String() string {
 		Greater:       "Greater",
 		LessEquals:    "LessEquals",
 		GreaterEquals: "GreaterEquals",
+		DivisibleBy:   "DivisibleBy",
 		And:           "And",
 		Or:            "Or",
 		Comma:         "Comma",
@@ -66,11 +71,14 @@ func (k Kind) String() string {
 		Neg:           "Neg",
 		Star:          "Star",
 		Slash:         "Slash",
+		Mod:           "Mod",
 		Splat:         "Splat",
 		Rep:           "Rep",
 		Snippet:       "Snippet",
 		Lbrace:        "Lbrace",
 		Rbrace:        "Rbrace",
+		Lbracket:      "Lbracket",
+		Rbracket:      "Rbracket",
 		Lparen:        "Lparen",
 		Rparen:        "Rparen",
 		Pipe:          "Pipe",

@@ -3,6 +3,7 @@ package ast
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -136,6 +137,36 @@ type Lambda struct {
 func (l Lambda) isNode()        {}
 func (l Lambda) isExpr()        {}
 func (l Lambda) String() string { return "{ " + l.Body.String() + " }" }
+func (l Lambda) NumArgs() int {
+	params := l.Params()
+	argOrder := "xyzabcdefghijklmnopqrstuvw"
+	return strings.Index(argOrder, params[len(params)-1]) - strings.Index(argOrder, params[0]) + 1
+}
+func (l Lambda) Params() []string {
+	// recursively search for single-char identifiers in body
+	seen := make(map[string]bool)
+	var args []string
+	Visit(l.Body, func(n Node) bool {
+		switch n := n.(type) {
+		case Lambda:
+			// do not descend into other lambdas
+			return false
+		case Ident:
+			if len(n.Name) == 1 && !seen[n.Name] {
+				args = append(args, n.Name)
+				seen[n.Name] = true
+			}
+			return false
+		default:
+			return true
+		}
+	})
+	argOrder := "xyzabcdefghijklmnopqrstuvw"
+	sort.Slice(args, func(i, j int) bool {
+		return strings.Index(argOrder, args[i]) < strings.Index(argOrder, args[j])
+	})
+	return args
+}
 
 // e.g. foo 1 2 3
 type FnCall struct {
@@ -208,6 +239,44 @@ func (p Program) String() string {
 		strs[i] = p.Stmts[i].String()
 	}
 	return strings.Join(strs, "\n")
+}
+
+func Visit(n Node, fn func(Node) bool) {
+	if !fn(n) {
+		return
+	}
+	switch n := n.(type) {
+	case Splat:
+		Visit(n.Fn, fn)
+	case Rep:
+		Visit(n.Fn, fn)
+	case Array:
+		for _, e := range n.Elems {
+			Visit(e, fn)
+		}
+	case InfixOp:
+		Visit(n.Left, fn)
+		Visit(n.Right, fn)
+	case Lambda:
+		Visit(n.Body, fn)
+	case FnCall:
+		Visit(n.Fn, fn)
+		for _, e := range n.Args {
+			Visit(e, fn)
+		}
+	case Pipe:
+		Visit(n.Left, fn)
+		Visit(n.Right, fn)
+	case ExprStmt:
+		Visit(n.X, fn)
+	case AssignStmt:
+		Visit(n.Name, fn)
+		Visit(n.X, fn)
+	case Program:
+		for _, e := range n.Stmts {
+			Visit(e, fn)
+		}
+	}
 }
 
 func Print(n Node) string {
