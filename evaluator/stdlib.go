@@ -43,9 +43,11 @@ var builtins = [...]*BuiltinValue{
 	makeBuiltin("digits", builtinDigits),
 	makeBuiltin("int", builtinInt),
 	makeBuiltin("ints", builtinInts),
+	makeBuiltin("string", builtinString),
 	makeBuiltin("map", builtinMap),
 	makeBuiltin("reverse", builtinReverse),
 	makeBuiltin("transpose", builtinTranspose),
+	makeBuiltin("rotate", builtinRotate),
 	makeBuiltin("sort", builtinSort),
 	makeBuiltin("sortBy", builtinSortBy),
 	makeBuiltin("sorted", builtinSorted),
@@ -66,6 +68,7 @@ var builtins = [...]*BuiltinValue{
 	makeBuiltin("collect", builtinCollect),
 	makeBuiltin("contains", builtinContains),
 	makeBuiltin("containsAny", builtinContainsAny),
+	makeBuiltin("hasPrefix", builtinHasPrefix),
 	makeBuiltin("not", builtinNot),
 	makeBuiltin("scan", builtinScan),
 	makeBuiltin("iterate", builtinIterate),
@@ -80,7 +83,10 @@ var builtins = [...]*BuiltinValue{
 	makeBuiltin("all", builtinAll),
 	makeBuiltin("cycle", builtinCycle),
 	makeBuiltin("concat", builtinConcat),
+	makeBuiltin("append", builtinAppend),
+	makeBuiltin("prepend", builtinPrepend),
 	makeBuiltin("uniq", builtinUniq),
+	makeBuiltin("uniqBy", builtinUniqBy),
 	makeBuiltin("dups", builtinDups),
 	makeBuiltin("repeat", builtinRepeat),
 	makeBuiltin("alpha", builtinAlpha),
@@ -99,6 +105,7 @@ var builtins = [...]*BuiltinValue{
 	makeBuiltin("minBy", builtinMinBy),
 	makeBuiltin("maxIndex", builtinMaxIndex),
 	makeBuiltin("minIndex", builtinMinIndex),
+	makeBuiltin("memo", builtinMemo),
 }
 
 var arrayTyp = reflect.TypeOf(&ArrayValue{})
@@ -408,6 +415,14 @@ func builtinDot(l, r Value) Value {
 			panic(fmt.Sprintf("map does not contain %v", r))
 		}
 		return v
+	case *IteratorValue:
+		switch r := r.(type) {
+		case *IntegerValue:
+			for n := r.i; n > 0; n-- {
+				l.next()
+			}
+			return l.next()
+		}
 	}
 	panic(fmt.Sprintf("unhandled type combination %T . %T", l, r))
 }
@@ -442,17 +457,32 @@ func builtinChars(s *StringValue) *ArrayValue {
 	return makeArray(elems)
 }
 
-func builtinDigits(v *IntegerValue) *ArrayValue {
-	var elems []Value
-	for v.i != 0 {
-		elems = append(elems, makeInteger(v.i%10))
-		v.i /= 10
+func builtinDigits(v Value) *ArrayValue {
+	switch v := v.(type) {
+	case *IntegerValue:
+		var elems []Value
+		for v.i != 0 {
+			elems = append(elems, makeInteger(v.i%10))
+			v.i /= 10
+		}
+		for i := 0; i < len(elems)/2; i++ {
+			j := len(elems) - i - 1
+			elems[i], elems[j] = elems[j], elems[i]
+		}
+		return makeArray(elems)
+	case *StringValue:
+		elems := make([]Value, len(v.s))
+		for i, c := range v.s {
+			d := int64(c - '0')
+			if d < 0 || d > 9 {
+				panic("invalid digit")
+			}
+			elems[i] = makeInteger(d)
+		}
+		return makeArray(elems)
+	default:
+		panic(fmt.Sprintf("digits: unhandled type %T", v))
 	}
-	for i := 0; i < len(elems)/2; i++ {
-		j := len(elems) - i - 1
-		elems[i], elems[j] = elems[j], elems[i]
-	}
-	return makeArray(elems)
 }
 
 func builtinInt(s *StringValue) *IntegerValue {
@@ -475,6 +505,10 @@ func builtinInts(s *StringValue) *ArrayValue {
 		}
 	}
 	return makeArray(elems)
+}
+
+func builtinString(v Value) *StringValue {
+	return makeString(v.String())
 }
 
 func builtinHead(it *IteratorValue) Value {
@@ -779,7 +813,24 @@ func builtinTranspose(a *ArrayValue) *ArrayValue {
 	}
 }
 
+func builtinRotate(n *IntegerValue, v Value) Value {
+	switch v := v.(type) {
+	case *ArrayValue:
+		elems := make([]Value, 0, len(v.elems))
+		elems = append(elems, v.elems[n.i:]...)
+		elems = append(elems, v.elems[:n.i]...)
+		return makeArray(elems)
+	case *StringValue:
+		return makeString(v.s[n.i:] + v.s[:n.i])
+	default:
+		panic(fmt.Sprintf("cannot rotate %T", v))
+	}
+}
+
 func builtinSort(v Value) Value {
+	if it, ok := v.(*IteratorValue); ok {
+		v = builtinCollect(it)
+	}
 	switch v := v.(type) {
 	case *ArrayValue:
 		sorted := append([]Value(nil), v.elems...)
@@ -798,12 +849,22 @@ func builtinSort(v Value) Value {
 }
 
 func builtinSortBy(env *Environment, fn Value, v Value) Value {
+	arity := env.apply(fn).(*PartialValue).need()
+	if it, ok := v.(*IteratorValue); ok {
+		v = builtinCollect(it)
+	}
 	switch v := v.(type) {
 	case *ArrayValue:
 		sorted := append([]Value(nil), v.elems...)
-		sort.Slice(sorted, func(i, j int) bool {
-			return env.apply(fn, sorted[i], sorted[j]).(*BoolValue).b
-		})
+		if arity == 1 {
+			sort.Slice(sorted, func(i, j int) bool {
+				return internalLess(env.apply1(fn, sorted[i]), env.apply1(fn, sorted[j]))
+			})
+		} else if arity == 2 {
+			sort.Slice(sorted, func(i, j int) bool {
+				return env.apply(fn, sorted[i], sorted[j]).(*BoolValue).b
+			})
+		}
 		return makeArray(sorted)
 	case *StringValue:
 		b := []byte(v.s)
@@ -844,6 +905,7 @@ func builtinMap(env *Environment, fn Value, it *IteratorValue) *IteratorValue {
 			}
 			return env.apply1(fn, v)
 		},
+		infinite: it.infinite,
 	}
 }
 
@@ -952,9 +1014,10 @@ func builtinScan(env *Environment, fn Value, it *IteratorValue) *IteratorValue {
 func builtinIterate(env *Environment, fn Value, v Value) *IteratorValue {
 	return &IteratorValue{
 		next: func() Value {
+			r := v
 			v = internalClone(v)
 			v = env.apply1(fn, v)
-			return v
+			return r
 		},
 		infinite: true,
 	}
@@ -1010,10 +1073,73 @@ func builtinConcat(it *IteratorValue) Value {
 			}
 		}
 		return makeString(s)
+	case *IteratorValue:
+		return &IteratorValue{
+			next: func() Value {
+				v := acc.next()
+				for v == nil {
+					next := it.next()
+					if next == nil {
+						return nil
+					} else if _, ok := next.(*IteratorValue); !ok {
+						panic(fmt.Sprintf("cannot concat %T with %T", acc, next))
+					}
+					acc = next.(*IteratorValue)
+					v = acc.next()
+				}
+				return v
+			},
+		}
 	case nil:
 		return makeArray(nil)
 	default:
 		panic(fmt.Sprintf("cannot concat %T", acc))
+	}
+}
+
+func builtinAppend(v Value, it Value) Value {
+	switch it := it.(type) {
+	case *ArrayValue:
+		elems := make([]Value, 0, len(it.elems)+1)
+		elems = append(elems, it.elems...)
+		elems = append(elems, v)
+		return makeArray(elems)
+	case *IteratorValue:
+		return &IteratorValue{
+			next: func() Value {
+				n := it.next()
+				if n == nil {
+					n = v
+					v = nil
+				}
+				return n
+			},
+		}
+	default:
+		panic(fmt.Sprintf("cannot append to %T", it))
+	}
+}
+
+func builtinPrepend(v Value, it Value) Value {
+	switch it := it.(type) {
+	case *ArrayValue:
+		elems := make([]Value, 0, len(it.elems)+1)
+		elems = append(elems, v)
+		elems = append(elems, it.elems...)
+		return makeArray(elems)
+	case *IteratorValue:
+		return &IteratorValue{
+			next: func() Value {
+				if v == nil {
+					return it.next()
+				}
+				n := v
+				v = nil
+				return n
+			},
+		}
+	default:
+		panic(fmt.Sprintf("cannot prepend to %T", it))
 	}
 }
 
@@ -1101,6 +1227,20 @@ func builtinUniq(it *IteratorValue) *ArrayValue {
 		m.set(v, nil)
 	}
 	return makeArray(m.keys)
+}
+
+func builtinUniqBy(env *Environment, fn Value, it *IteratorValue) *ArrayValue {
+	if it.infinite {
+		panic("cannot collect infinite iterator")
+	}
+	m := makeMap()
+	for v := it.next(); v != nil; v = it.next() {
+		k := env.apply1(fn, v)
+		if m.get(k) == nil {
+			m.set(k, v)
+		}
+	}
+	return makeArray(m.vals)
 }
 
 func builtinDups(it *IteratorValue) *IteratorValue {
@@ -1362,6 +1502,31 @@ func builtinContainsAny(cs *ArrayValue, it Value) Value {
 	}
 }
 
+func builtinHasPrefix(p Value, it Value) *BoolValue {
+	switch it := it.(type) {
+	case *StringValue:
+		s, ok := p.(*StringValue)
+		if !ok {
+			panic(fmt.Sprintf("cannot check for %T in %T", p, it))
+		}
+		return makeBool(strings.HasPrefix(it.s, s.s))
+	case *ArrayValue:
+		if a, ok := p.(*ArrayValue); ok {
+			n := makeInteger(int64(len(a.elems)))
+			return builtinEquals(a, builtinTake(n, internalArrayIterator(it)))
+		}
+		return builtinEquals(p, builtinHead(internalArrayIterator(it)))
+	case *IteratorValue:
+		if a, ok := p.(*ArrayValue); ok {
+			n := makeInteger(int64(len(a.elems)))
+			return builtinEquals(a, builtinTake(n, it))
+		}
+		return builtinEquals(p, builtinHead(it))
+	default:
+		panic(fmt.Sprintf("hasPrefix: unhandled type %T", it))
+	}
+}
+
 func builtinHistogram(it *IteratorValue) *MapValue {
 	m := makeMap()
 	for v := it.next(); v != nil; v = it.next() {
@@ -1490,4 +1655,21 @@ func builtinMinIndex(it Value) Value {
 		panic("minIndex: empty")
 	}
 	return minIndex
+}
+
+func builtinMemo(env *Environment, fn Value) *BuiltinValue {
+	pfn := env.apply(fn).(*PartialValue)
+	m := makeMap()
+	return &BuiltinValue{
+		name:  "memo",
+		nargs: pfn.need(),
+		fn: func(env *Environment, args []Value) Value {
+			if v := m.get(makeArray(args)); v != nil {
+				return v
+			}
+			v := env.apply(pfn, args...)
+			m.set(makeArray(args), v)
+			return v
+		},
+	}
 }

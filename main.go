@@ -74,14 +74,6 @@ map _.1 | sum
 map -<{mapchar ((_-'a' + y % 26) + 'a') x}
 `
 
-	// 2016 day 5
-	prog = `
-=pws iota | map (input + str | md5) | filter (hasPrefix "00000")
-take 8 pws | concatmap _.5
-pws | filter (_.5 < 8) | take 8 | sortBy _.5 | concatmap _.7
-
-`
-
 	// 2018 day 3
 	prog = `
 =input lines | map (ints | name ["id", "x", "y", "w", "h"])  ;;#123 @ 3,2: 5x4
@@ -122,7 +114,9 @@ sort | deltas | histogram |: (_.1 + 1) * (_.3 + 1)
 	}
 	p := parser.Parse(lexer.Tokenize(prog))
 	start := time.Now()
-	//defer profile.Start(profile.CPUProfile, profile.ProfilePath(".")).Stop()
-	evaluator.New().Run(p, string(input), func(v evaluator.Value) { fmt.Println(v) })
+	err = evaluator.New().Run(p, string(input), func(v evaluator.Value) { fmt.Println(v) })
+	if err != nil {
+		panic(err)
+	}
 	fmt.Println("\nFinished in", time.Since(start))
 }

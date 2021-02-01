@@ -47,6 +47,26 @@ map -:(ribbon + bow) | sum
 3783758
 `,
 		},
+
+		{
+			// NOTE: altered from original; five zeros takes WAY too long
+			year: 2015, day: 4,
+			prog: `
+vvv
+	func MD5(s string) string {
+		sum := md5.Sum([]byte(s))
+		return hex.EncodeToString(sum[:])
+	}
+^^^
+=md5 { MD5 (input + string x) }
+iota | first (md5 | hasPrefix "000")
+iota | first (md5 | hasPrefix "0000")
+`,
+			exp: `
+3784
+10859
+`,
+		},
 		{
 			year: 2015, day: 5,
 			prog: `
@@ -69,6 +89,43 @@ count nice
 `,
 		},
 		{
+			year: 2015, day: 8,
+			prog: `
+=input lines
+vvv
+	func Quote(s string) string {
+		return strconv.Quote(s)
+	}
+	func Unquote(s string) string {
+		s, err := strconv.Unquote(s)
+		if err != nil {
+			panic(err)
+		}
+		return s
+	}
+^^^
+map {len x - len (Unquote x)} | sum
+map {(len (Quote x)) - len x} | sum
+`,
+			exp: `
+1371
+2117
+`,
+		},
+		{
+			// NOTE: altered from original; 50 iterations takes WAY too long
+			year: 2015, day: 10,
+			prog: `
+=looksay runs | map -:((len | string) + head) | concat
+iterate looksay | _.20 | len
+iterate looksay | _.30 | len
+`,
+			exp: `
+1250
+17874
+`,
+		},
+		{
 			year: 2016, day: 3,
 			prog: `
 =input lines | map ints
@@ -83,6 +140,26 @@ count validTri
 `,
 		},
 		{
+			// NOTE: altered from original; five zeros takes WAY too long
+			year: 2016, day: 5,
+			prog: `
+vvv
+func MD5(s string) string {
+		sum := md5.Sum([]byte(s))
+		return hex.EncodeToString(sum[:])
+	}
+^^^
+=md5 {MD5 (input + string x)}
+iota | map md5 | filter (hasPrefix "00") | take 8 | transpose | _.5
+=findIndices filter (_.5 < "8") | prepend [] | scan {append y x | uniqBy _.5} | first (len == 8)
+iota | map md5 | filter (hasPrefix "00") | findIndices | sortBy _.5 | transpose | _.6
+`,
+			exp: `
+f2e10439
+7479c696
+`,
+		},
+		{
 			year: 2016, day: 6,
 			prog: `
 =input lines | transpose | map histogram
@@ -92,6 +169,18 @@ map minIndex | concat
 			exp: `
 nabgqlcw
 ovtrjcjh
+`,
+		},
+		{
+			year: 2017, day: 1,
+			prog: `
+=input digits
+append (head input) | window 2 | filter -<(==) | map (.0) | sum
+zip input (rotate (len input / 2) input) | filter -<(==) | map (.0) | sum
+`,
+			exp: `
+1047
+982
 `,
 		},
 		{
@@ -167,7 +256,7 @@ map without (zip alpha (toUpper alpha)) | min
 =input ints
 =fuel {x/3 - 2}
 map fuel | sum
-=recfuel iterate fuel | takeWhile (>0) | sum
+=recfuel fuel | iterate fuel | takeWhile (>0) | sum
 map recfuel | sum
 `,
 			exp: `
@@ -233,17 +322,17 @@ map { count (len x) (concat x | histogram | vals) } | sum
 				strings.Join(exp, "\n"), strings.Join(output, "\n"))
 			continue
 		}
-		elapsedStr := elapsed.String()
+		elapsedStr := fmt.Sprintf("%2ds %3dms", elapsed/time.Second, (elapsed%time.Second)/time.Millisecond)
 		switch {
 		case elapsed < 100*time.Millisecond:
 			elapsedStr = color.GreenString(elapsedStr)
-		case elapsed < 500*time.Millisecond:
-			elapsedStr = color.WhiteString(elapsedStr)
 		case elapsed < 1*time.Second:
+			elapsedStr = color.WhiteString(elapsedStr)
+		case elapsed < 5*time.Second:
 			elapsedStr = color.YellowString(elapsedStr)
 		default:
 			elapsedStr = color.RedString(elapsedStr)
 		}
-		t.Logf("%v day %v PASS (%v)", test.year, test.day, elapsedStr)
+		t.Logf("%v day %2v PASS (%v)", test.year, test.day, elapsedStr)
 	}
 }

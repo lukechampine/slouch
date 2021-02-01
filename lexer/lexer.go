@@ -101,7 +101,7 @@ func Tokenize(s string) (ts []token.Token) {
 		case c == '"':
 			str := ""
 			i++
-			for i < len(s) && s[i] != '"' {
+			for i < len(s) && !(s[i] == '"' && s[i-1] != '\\') {
 				str += string(s[i])
 				i++
 			}

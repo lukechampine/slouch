@@ -8,6 +8,7 @@ import (
 	gotoken "go/token"
 	"reflect"
 	"strconv"
+	"strings"
 	"sync"
 
 	"lukechampine.com/slouch/ast"
@@ -322,8 +323,18 @@ func (env *Environment) apply(fn Value, args ...Value) Value {
 		return args[0]
 
 	case *GoValue:
-		// TODO: need to handle arg passing
-		v, err := env.gointerp.Eval(fn.name + "()")
+		argStrs := make([]string, len(args))
+		for i, a := range args {
+			switch a := a.(type) {
+			case *IntegerValue:
+				argStrs[i] = a.String()
+			case *StringValue:
+				argStrs[i] = strconv.Quote(a.String())
+			default:
+				panic(fmt.Sprintf("unhandled argument type %T", a))
+			}
+		}
+		v, err := env.gointerp.Eval(fn.name + "(" + strings.Join(argStrs, ", ") + ")")
 		if err != nil {
 			panic(err)
 		}
@@ -358,10 +369,11 @@ var argsPool = sync.Pool{
 func New() *Environment {
 	i := interp.New(interp.Options{GoPath: "/Users/luke/go"})
 	i.Use(stdlib.Symbols)
-	if _, err := i.Eval(`import "fmt"`); err != nil {
-		panic(err)
-		// } else if _, err := i.Eval(`import "lukechampine.com/advent/utils"`); err != nil {
-		// 	panic(err)
+	pkgs := []string{"crypto/md5", "fmt", "encoding/hex", "strconv", "strings"}
+	for _, pkg := range pkgs {
+		if _, err := i.Eval(fmt.Sprintf("import %q", pkg)); err != nil {
+			panic(err)
+		}
 	}
 	idents := make(map[string]Value, len(builtins))
 	for _, b := range builtins {
