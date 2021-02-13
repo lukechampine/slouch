@@ -110,6 +110,19 @@ func Tokenize(s string) (ts []token.Token) {
 				Lit:  `"` + str + `"`,
 			})
 
+		// literal string
+		case c == '`':
+			str := ""
+			i++
+			for i < len(s) && s[i] != '`' {
+				str += string(s[i])
+				i++
+			}
+			ts = append(ts, token.Token{
+				Kind: token.String,
+				Lit:  "`" + str + "`",
+			})
+
 		// number
 		case isDigit(c):
 			num := ""

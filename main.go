@@ -49,30 +49,16 @@ import (
 			* but also, onchange, re-run and send results to a "webview" extension
 
 	IDEAS:
+	- [ ] make "truthy" explicit, never implicit
 	- [ ] assign to global within expr
 		e.g. first -<(d=(diff) | len == 1) | delete d
 	- [/] paste problem description into AI; spits out possibly-relevant functions
 		* probably better to have human-directed keyword search (e.g. "circular" spits out cycle)
-	- [ ] time.Parse API for directions: parsedirs "U1 D2 L3 R4", parsedirs "N:1 S:2 W:3 E:4"
+	- [ ] time.Parse-style API for directions: parsedirs "U1 D2 L3 R4", parsedirs "N:1 S:2 W:3 E:4"
 */
 
 func main() {
 	var prog string
-
-	// 2016 day 4
-	prog = `
-=input lines | map (parse "%s-%d[%s]")
-=input filter -< {
-	delete "-" x |
-	histogram |
-	keys |
-	take 5 |
-	(== z)
-}
-map _.1 | sum
-
-map -<{mapchar ((_-'a' + y % 26) + 'a') x}
-`
 
 	// 2018 day 3
 	prog = `

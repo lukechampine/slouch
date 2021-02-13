@@ -140,6 +140,20 @@ count validTri
 `,
 		},
 		{
+			year: 2016, day: 4,
+			prog: `
+=input lines | map (parse ` + "`" + `([a-z\-]+)(\d+)\[(\w+)\]` + "`" + `)
+=checksum delete "-" | histogram | sortBy [{x.1 > y.1}, {x.0 < y.0}] | take 5 | map _.0 | concat
+=input filter -< {checksum x == z}
+map (_.1 | int) | sum
+first (take 2 |< {caesar (int y) x} == "northpole-object-storage-") | .1
+`,
+			exp: `
+409147
+991
+`,
+		},
+		{
 			// NOTE: altered from original; five zeros takes WAY too long
 			year: 2016, day: 5,
 			prog: `

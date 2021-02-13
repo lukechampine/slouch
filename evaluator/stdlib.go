@@ -3,6 +3,7 @@ package evaluator
 import (
 	"fmt"
 	"reflect"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -43,11 +44,13 @@ var builtins = [...]*BuiltinValue{
 	makeBuiltin("digits", builtinDigits),
 	makeBuiltin("int", builtinInt),
 	makeBuiltin("ints", builtinInts),
+	makeBuiltin("parse", builtinParse),
 	makeBuiltin("string", builtinString),
 	makeBuiltin("map", builtinMap),
 	makeBuiltin("reverse", builtinReverse),
 	makeBuiltin("transpose", builtinTranspose),
 	makeBuiltin("rotate", builtinRotate),
+	makeBuiltin("caesar", builtinCaesar),
 	makeBuiltin("sort", builtinSort),
 	makeBuiltin("sortBy", builtinSortBy),
 	makeBuiltin("sorted", builtinSorted),
@@ -507,6 +510,16 @@ func builtinInts(s *StringValue) *ArrayValue {
 	return makeArray(elems)
 }
 
+func builtinParse(re *StringValue, s *StringValue) *ArrayValue {
+	r := regexp.MustCompile(re.s)
+	matches := r.FindStringSubmatch(s.s)[1:]
+	elems := make([]Value, len(matches))
+	for i := range elems {
+		elems[i] = makeString(matches[i])
+	}
+	return makeArray(elems)
+}
+
 func builtinString(v Value) *StringValue {
 	return makeString(v.String())
 }
@@ -827,6 +840,18 @@ func builtinRotate(n *IntegerValue, v Value) Value {
 	}
 }
 
+func builtinCaesar(n *IntegerValue, s *StringValue) *StringValue {
+	b := []byte(s.s)
+	for i, c := range b {
+		if 'a' <= c && c <= 'z' {
+			b[i] = byte((int64(c-'a')+n.i)%26) + 'a'
+		} else if 'A' <= c && c <= 'Z' {
+			b[i] = byte((int64(c-'A')+n.i)%26) + 'Z'
+		}
+	}
+	return makeString(string(b))
+}
+
 func builtinSort(v Value) Value {
 	if it, ok := v.(*IteratorValue); ok {
 		v = builtinCollect(it)
@@ -849,22 +874,54 @@ func builtinSort(v Value) Value {
 }
 
 func builtinSortBy(env *Environment, fn Value, v Value) Value {
-	arity := env.apply(fn).(*PartialValue).need()
+	if m, ok := v.(*MapValue); ok {
+		v = internalMapIterator(m)
+	}
 	if it, ok := v.(*IteratorValue); ok {
 		v = builtinCollect(it)
+	}
+	var arity int
+	if _, ok := fn.(*ArrayValue); ok {
+		arity = 0
+	} else {
+		arity = env.apply(fn).(*PartialValue).need()
 	}
 	switch v := v.(type) {
 	case *ArrayValue:
 		sorted := append([]Value(nil), v.elems...)
-		if arity == 1 {
-			sort.Slice(sorted, func(i, j int) bool {
+		var sortFn func(i, j int) bool
+		switch arity {
+		case 0:
+			// multisort
+			fns := fn.(*ArrayValue).elems
+			sortFn = func(i, j int) bool {
+				for _, fn := range fns {
+					var cmp1, cmp2 bool
+					arity := env.apply(fn).(*PartialValue).need()
+					if arity == 1 {
+						ei, ej := env.apply1(fn, sorted[i]), env.apply1(fn, sorted[j])
+						cmp1 = internalLess(ei, ej)
+						cmp2 = internalLess(ej, ei)
+					} else {
+						cmp1 = env.apply(fn, sorted[i], sorted[j]).(*BoolValue).b
+						cmp2 = env.apply(fn, sorted[j], sorted[i]).(*BoolValue).b
+					}
+					if cmp1 != cmp2 {
+						return cmp1
+					}
+				}
+				return false
+			}
+		case 1:
+			sortFn = func(i, j int) bool {
 				return internalLess(env.apply1(fn, sorted[i]), env.apply1(fn, sorted[j]))
-			})
-		} else if arity == 2 {
-			sort.Slice(sorted, func(i, j int) bool {
+			}
+		case 2:
+			sortFn = func(i, j int) bool {
 				return env.apply(fn, sorted[i], sorted[j]).(*BoolValue).b
-			})
+			}
 		}
+		sort.Slice(sorted, sortFn)
 		return makeArray(sorted)
 	case *StringValue:
 		b := []byte(v.s)

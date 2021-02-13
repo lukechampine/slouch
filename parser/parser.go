@@ -221,6 +221,7 @@ func (p *Parser) parseAssignStmt() ast.Stmt {
 }
 
 func (p *Parser) parseExpr(prec int) ast.Expr {
+	p.consumeWhitespace()
 	t := p.cur()
 	pfn, ok := p.prefixFns[t.Kind]
 	if !ok {
@@ -263,11 +264,19 @@ func (p *Parser) parseIdentifier() ast.Expr { return ast.Ident{Token: p.cur(), N
 func (p *Parser) parseHole() ast.Expr       { return ast.Hole{Token: p.cur()} }
 
 func (p *Parser) parseString() ast.Expr {
-	str, err := strconv.Unquote(p.cur().Lit)
-	if err != nil {
-		panic(err)
+	s := p.cur().Lit
+	if s[0] == '"' {
+		var err error
+		s, err = strconv.Unquote(s)
+		if err != nil {
+			panic(err)
+		}
+	} else if s[0] == '`' {
+		s = s[1 : len(s)-1]
+	} else {
+		panic("illegal string delimiter")
 	}
-	return ast.String{Token: p.cur(), Value: str}
+	return ast.String{Token: p.cur(), Value: s}
 }
 
 func (p *Parser) parseSplat() ast.Expr {
@@ -323,6 +332,7 @@ func (p *Parser) parseLambda() ast.Expr {
 	p.consume(token.Lbracket)
 	e := p.parseExpr(precLowest)
 	p.advance()
+	p.consumeWhitespace()
 	p.expect(token.Rbracket)
 	return ast.Lambda{
 		Token: t,
