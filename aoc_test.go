@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"io/ioutil"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -291,6 +290,23 @@ count (runs | any (len == 2))
 `,
 		},
 		{
+			year: 2019, day: 8,
+			prog: `
+=input partition (25*6) | map (map int | collect)
+minBy (count 0) | histogram |: (_.1 * _.2)
+transpose | map (first (!= 2)) | map [1:"#", 0:" "]._ | concat | partition 25 | join "\n"
+`,
+			exp: `
+2064
+#  #  ##  #  # ####  ##  
+# #  #  # #  #    # #  # 
+##   #  # #  #   #  #  # 
+# #  #### #  #  #   #### 
+# #  #  # #  # #    #  # 
+#  # #  #  ##  #### #  # 
+`,
+		},
+		{
 			year: 2020, day: 1,
 			prog: `
 =input ints
@@ -314,6 +330,20 @@ map { count (len x) (concat x | histogram | vals) } | sum
 3579
 `,
 		},
+		{
+			year: 2020, day: 9,
+			prog: `
+=input ints
+=invalid input | window 26 | first { choose 2 x | none (sum == (last x)) } | last
+invalid
+=trim inits | first (sum >= invalid)
+tails | map trim | first (sum == invalid) |: min + max
+`,
+			exp: `
+1038347917
+137394018
+`,
+		},
 	}
 	for _, test := range tests {
 		input, err := ioutil.ReadFile(fmt.Sprintf("inputs/%v_day%v.txt", test.year, test.day))
@@ -331,9 +361,9 @@ map { count (len x) (concat x | histogram | vals) } | sum
 		if err != nil {
 			t.Fatal(err)
 		}
-		if exp := strings.Split(strings.TrimSpace(test.exp), "\n"); !reflect.DeepEqual(output, exp) {
-			t.Errorf("output did not match for %v day%v:\nexp:\n%v\ngot:\n%v", test.year, test.day,
-				strings.Join(exp, "\n"), strings.Join(output, "\n"))
+		if exp := strings.Trim(test.exp, "\n"); strings.Join(output, "\n") != exp {
+			t.Errorf("output did not match for %v day%v:\nexp:\n%q\ngot:\n%q", test.year, test.day,
+				exp, strings.Join(output, "\n"))
 			continue
 		}
 		elapsedStr := fmt.Sprintf("%2ds %3dms", elapsed/time.Second, (elapsed%time.Second)/time.Millisecond)

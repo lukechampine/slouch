@@ -37,7 +37,11 @@ var builtins = [...]*BuiltinValue{
 	makeBuiltin("len", builtinLen),
 	makeBuiltin("head", builtinHead),
 	makeBuiltin("last", builtinLast),
+	makeBuiltin("tail", builtinTail),
+	makeBuiltin("tails", builtinTails),
+	makeBuiltin("inits", builtinInits),
 	makeBuiltin("split", builtinSplit),
+	makeBuiltin("join", builtinJoin),
 	makeBuiltin("lines", builtinLines),
 	makeBuiltin("words", builtinWords),
 	makeBuiltin("chars", builtinChars),
@@ -84,6 +88,7 @@ var builtins = [...]*BuiltinValue{
 	makeBuiltin("zipWith", builtinZipWith),
 	makeBuiltin("any", builtinAny),
 	makeBuiltin("all", builtinAll),
+	makeBuiltin("none", builtinNone),
 	makeBuiltin("cycle", builtinCycle),
 	makeBuiltin("concat", builtinConcat),
 	makeBuiltin("append", builtinAppend),
@@ -439,6 +444,14 @@ func builtinSplit(split *StringValue, s *StringValue) *ArrayValue {
 	return makeArray(elems)
 }
 
+func builtinJoin(split *StringValue, a *ArrayValue) *StringValue {
+	strs := make([]string, len(a.elems))
+	for i := range strs {
+		strs[i] = a.elems[i].String()
+	}
+	return makeString(strings.Join(strs, split.s))
+}
+
 func builtinLines(s *StringValue) *ArrayValue {
 	return builtinSplit(makeString("\n"), s)
 }
@@ -541,6 +554,48 @@ func builtinLast(it *IteratorValue) Value {
 		v = next
 	}
 	return v
+}
+
+func builtinTail(it *IteratorValue) Value {
+	v := it.next()
+	if v == nil {
+		panic("tail called on empty array or iterator")
+	}
+	return it
+}
+
+func builtinTails(it *IteratorValue) Value {
+	done := false
+	a := builtinCollect(it)
+	return &IteratorValue{
+		next: func() Value {
+			if done {
+				return nil
+			}
+			v := makeArray(a.elems)
+			if len(a.elems) == 0 {
+				done = true
+			} else {
+				a.elems = a.elems[1:]
+			}
+			return v
+		},
+	}
+}
+
+func builtinInits(it *IteratorValue) Value {
+	a := builtinCollect(it)
+	i := 0
+	return &IteratorValue{
+		next: func() Value {
+			if i > len(a.elems) {
+				return nil
+			}
+			v := makeArray(a.elems[:i])
+			i++
+			return v
+		},
+	}
 }
 
 func builtinToUpper(s *StringValue) *StringValue {
@@ -691,15 +746,42 @@ func builtinWindow(n *IntegerValue, it Value) *IteratorValue {
 	panic(fmt.Sprintf("count: unhandled type %T", it))
 }
 
-func builtinPartition(n *IntegerValue, it *IteratorValue) *IteratorValue {
-	return &IteratorValue{
-		next: func() Value {
-			a := builtinCollect(builtinTake(n, it))
-			if len(a.elems) == 0 {
-				return nil
-			}
-			return a
-		},
+func builtinPartition(n *IntegerValue, it Value) Value {
+	switch it := it.(type) {
+	case *StringValue:
+		var parts []Value
+		s := it.s
+		for len(s) > int(n.i) {
+			parts = append(parts, makeString(s[:n.i]))
+			s = s[n.i:]
+		}
+		if len(s) > 0 {
+			parts = append(parts, makeString(s))
+		}
+		return makeArray(parts)
+	case *ArrayValue:
+		var parts []Value
+		elems := append([]Value(nil), it.elems...)
+		for len(elems) > int(n.i) {
+			parts = append(parts, makeArray(elems[:n.i]))
+			elems = elems[n.i:]
+		}
+		if len(elems) > 0 {
+			parts = append(parts, makeArray(elems))
+		}
+		return makeArray(parts)
+	case *IteratorValue:
+		return &IteratorValue{
+			next: func() Value {
+				a := builtinCollect(builtinTake(n, it))
+				if len(a.elems) == 0 {
+					return nil
+				}
+				return a
+			},
+		}
+	default:
+		panic(fmt.Sprintf("cannot partition %T", it))
 	}
 }
 
@@ -1412,6 +1494,15 @@ func builtinAny(env *Environment, fn Value, it *IteratorValue) *BoolValue {
 func builtinAll(env *Environment, fn Value, it *IteratorValue) *BoolValue {
 	for v := it.next(); v != nil; v = it.next() {
 		if !internalTruthy(env.apply1(fn, v)) {
+			return makeBool(false)
+		}
+	}
+	return makeBool(true)
+}
+
+func builtinNone(env *Environment, fn Value, it *IteratorValue) *BoolValue {
+	for v := it.next(); v != nil; v = it.next() {
+		if internalTruthy(env.apply1(fn, v)) {
 			return makeBool(false)
 		}
 	}

@@ -27,6 +27,7 @@ import (
 		*
 		* "garbage collection" -- use ref counts, and .clone when multiple refs exist
 			* probably need to add .clone field to iterator
+	* add "clone" field to iterator?
 
 	PERF:
 	- [ ] special case []int64 and []string for arrays (or iterators?)
@@ -70,22 +71,10 @@ vals g | count (>1)
 first alone | @id
 `
 
-	// 2019 day 8
-	prog = `
-=input partition (25*6) | map (map int)
-minBy (count 0) | histogram |: (_.1 * _.2)
-`
-
 	// 2020 day 3
 	prog = `
 ;=input boolgrid "#."
 ;iterate (offset [3,1]) [0,0] | takeWhile (inbounds input) | map (input._) | sum
-`
-
-	// 2020 day 9
-	prog = `
-=input ints
-window 26 | first { choose 2 x | all (sum != (last x)) } | last
 `
 
 	// 2020 day 10
