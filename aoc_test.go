@@ -226,7 +226,7 @@ count (map sort | dups | len == 0)
 			prog: `
 =input ints
 sum
-cycle | scan (+) | firstrepeat
+cycle | scan (+) | firstRepeat
 `,
 			exp: `
 518

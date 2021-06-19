@@ -80,7 +80,7 @@ var builtins = [...]*BuiltinValue{
 	makeBuiltin("scan", builtinScan),
 	makeBuiltin("iterate", builtinIterate),
 	makeBuiltin("stabilize", builtinStabilize),
-	makeBuiltin("firstrepeat", builtinFirstRepeat),
+	makeBuiltin("firstRepeat", builtinFirstRepeat),
 	makeBuiltin("deltas", builtinDeltas),
 	makeBuiltin("diff", builtinDiff),
 	makeBuiltin("same", builtinSame),
