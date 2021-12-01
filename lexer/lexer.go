@@ -10,7 +10,7 @@ import (
 var singleCharTokens = map[byte]token.Kind{
 	'=':  token.Assign,
 	'+':  token.Plus,
-	'-':  token.Neg,
+	'-':  token.Minus,
 	'*':  token.Star,
 	'/':  token.Slash,
 	'%':  token.Mod,
@@ -41,6 +41,7 @@ var doubleCharTokens = map[string]token.Kind{
 	"!=": token.NotEquals,
 	"<=": token.LessEquals,
 	">=": token.GreaterEquals,
+	"--": token.Negative,
 	"%?": token.DivisibleBy,
 	"-<": token.Splat,
 	"|<": token.PipeSplat,
@@ -78,18 +79,6 @@ func Tokenize(s string) (ts []token.Token) {
 				Lit:  lit,
 			})
 			i++
-
-		case c == '-' && i+1 < len(s) && isDigit(s[i+1]):
-			// negative number
-			num := string(s[i])
-			for i++; i < len(s) && isDigit(s[i]); i++ {
-				num += string(s[i])
-			}
-			i--
-			ts = append(ts, token.Token{
-				Kind: token.Int,
-				Lit:  num,
-			})
 
 		case isSingleCharToken(c):
 			ts = append(ts, token.Token{

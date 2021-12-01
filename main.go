@@ -1,11 +1,18 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"io/ioutil"
+	"log"
+	"net/http"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
+	"github.com/chzyer/readline"
 	"lukechampine.com/slouch/evaluator"
 	"lukechampine.com/slouch/lexer"
 	"lukechampine.com/slouch/parser"
@@ -27,7 +34,6 @@ import (
 		*
 		* "garbage collection" -- use ref counts, and .clone when multiple refs exist
 			* probably need to add .clone field to iterator
-	* add "clone" field to iterator?
 
 	PERF:
 	- [ ] special case []int64 and []string for arrays (or iterators?)
@@ -56,20 +62,114 @@ import (
 	- [/] paste problem description into AI; spits out possibly-relevant functions
 		* probably better to have human-directed keyword search (e.g. "circular" spits out cycle)
 	- [ ] time.Parse-style API for directions: parsedirs "U1 D2 L3 R4", parsedirs "N:1 S:2 W:3 E:4"
+
+2017 day 14
+2018 day 15
+2018 day 23
+2019 day 18
+2020 day 20
+
 */
 
-func main() {
-	var prog string
+// terminal niceties:
+// - [x] readline (particularly history)
+// - [x] display result as you type, one line below
+//       * truncate as necessary
+// - [ ] colors
+// - [ ] tab completion
+// - [ ] timeout
+// - [ ] store result of each repl entry in r1, r2, etc.
+// - [ ] key bindings:
+//	   - [ ] ctrl-s: save current result to variable
+//	   - [ ] ctrl-l: drop into sub-evaluator where input is the first element of the current result; esc appends current prog to old cursor
 
-	// 2018 day 3
-	prog = `
-=input lines | map (ints | name ["id", "x", "y", "w", "h"])  ;;#123 @ 3,2: 5x4
-=makerect rect @w @h | offset [@x, @y]
-=g map makerect | concat | histogram
-vals g | count (>1)
-=alone makerect | all (g._ == 1)
-first alone | @id
-`
+func main() {
+	if len(os.Args) > 1 && os.Args[1] == "repl" {
+		log.SetFlags(0)
+
+		var input, solution string
+		var day, year, part int
+		eval := evaluator.New()
+		prompt, err := readline.New("slouch> ")
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer prompt.Close()
+		prev := &evalPreview{eval, prompt.Terminal, input, "", ""}
+		prompt.Config.Listener = prev
+		logf := func(s string, args ...interface{}) {
+			fmt.Fprintf(prompt, s, args...)
+		}
+		log := func(args ...interface{}) {
+			fmt.Fprintln(prompt, args...)
+		}
+		for {
+			line, err := prompt.Readline()
+			if err == io.EOF {
+				break
+			} else if err != nil {
+				log("Couldn't read input", err)
+				return
+			} else if len(line) == 0 {
+				continue
+			}
+			prompt.Terminal.Print("\r")
+
+			if !strings.HasPrefix(line, ":") {
+				solution, err = executeOne(eval, input, line)
+				if err != nil {
+					log("Error:", err)
+				} else {
+					log(solution)
+				}
+				continue
+			}
+			args := strings.Fields(line)
+			switch args[0] {
+			case ":reset":
+				eval = evaluator.New()
+				log("Reset evaluator")
+
+			case ":setday":
+				day, _ = strconv.Atoi(args[1])
+				year, _ = strconv.Atoi(args[2])
+				part = 1
+				input, err = fetchInput(day, year)
+				if err != nil {
+					log("Couldn't load input:", err)
+					break
+				}
+				prev.input = input
+				eval = evaluator.New()
+				prev.eval = eval
+				logf("Ready for Dec %v, %v!\n", day, year)
+
+			case ":run":
+				prog, err := ioutil.ReadFile(args[1])
+				if err != nil {
+					log("Couldn't load program:", err)
+					break
+				}
+				if err := execute(eval, input, string(prog), prompt.Terminal); err != nil {
+					log("Error:", err)
+				}
+			case ":submit":
+				if solution == "" {
+					solution = args[1]
+				}
+				logf("Submitting %v for part %v...\n", solution, part)
+				log(postSolution(year, day, part, solution))
+				part++
+				solution = ""
+
+			default:
+				log("Unrecognized command")
+			}
+		}
+		return
+	}
+
+	var prog string
 
 	// 2020 day 3
 	prog = `
@@ -83,6 +183,45 @@ first alone | @id
 sort | deltas | histogram |: (_.1 + 1) * (_.3 + 1)
 `
 
+	// 2015 day 3
+	prog = `
+=input chars | dirs "^v<>"
+=a actor [0,0]
+=a move a
+
+`
+
+	// 2016 day 2
+	prog = `
+=input lines | map (dirs "UDLR")
+=m maze (==" ") [
+	"123",
+	"456",
+	"789",
+]
+=a actor (center m) m
+map (move a | .tile)
+
+=m maze (==" ") [
+	"  1  ",
+	" 234 ",
+	"56789",
+	" ABC ",
+	"  D  ",
+]
+=a actor (center m) m
+map (move a | .tile)
+`
+
+	// 2018 day 3
+	prog = `
+=input lines | map (ints | struct ["id", "x", "y", "w", "h"])  ;;#123 @ 3,2: 5x4
+=makerect -: rectrel [_.id] _.x _.y _.w _.h
+=g map makerect | superimpose (concat)
+count (len > 1) g
+first (len == 1) g | head
+`
+
 	input, err := ioutil.ReadFile(os.Args[1])
 	if err != nil {
 		panic(err)
@@ -94,4 +233,156 @@ sort | deltas | histogram |: (_.1 + 1) * (_.3 + 1)
 		panic(err)
 	}
 	fmt.Println("\nFinished in", time.Since(start))
+}
+
+func execute(eval *evaluator.Environment, input, prog string, w io.Writer) (err error) {
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				err = fmt.Errorf("%v", r)
+			}
+		}()
+		p := parser.Parse(lexer.Tokenize(prog))
+		err = eval.Run(p, input, func(v evaluator.Value) {
+			fmt.Fprintln(w, v)
+		})
+	}()
+	return
+}
+
+func executeOne(eval *evaluator.Environment, input, prog string) (output string, err error) {
+	var buf bytes.Buffer
+	err = execute(eval, input, prog, &buf)
+	output = strings.TrimSpace(buf.String())
+	return
+}
+
+var closingChar = map[rune]rune{
+	'(': ')', '{': '}', '[': ']',
+	')': '(', '}': '{', ']': '[',
+}
+
+type evalPreview struct {
+	eval       *evaluator.Environment
+	term       *readline.Terminal
+	input      string
+	lastProg   string
+	lastOutput string
+}
+
+func (p *evalPreview) OnChange(line []rune, pos int, key rune) (newLine []rune, newPos int, ok bool) {
+	if strings.HasPrefix(string(line), ":") {
+		return
+	}
+	switch key {
+	case '(', '{', '[':
+		// paren/brace matching
+		if pos == len(line) || line[pos] == ' ' {
+			closer := map[rune]rune{'(': ')', '{': '}', '[': ']'}[key]
+			newLine = append(append(line[:pos:pos], closer), line[pos:]...)
+			return newLine, pos, true
+		}
+	case ')', '}', ']':
+		// overwrite closing char
+		if 0 < pos && pos < len(line) && line[pos-1] == key && line[pos] == key {
+			return append(line[:pos-1], line[pos:]...), pos, true
+		}
+		// case readline.CharBackspace, readline.CharDelete:
+		// 	// delete matching paren/brace
+		// 	if pos < len(line) && pos < len(p.lastProg) {
+		// 		switch c := p.lastProg[pos]; c {
+		// 		case '(', '{', '[':
+		// 			closer := map[byte]rune{'(': ')', '{': '}', '[': ']'}[c]
+		// 			if line[pos] == closer {
+		// 				line = append(line[:pos], line[pos+1:]...)
+		// 				return line, pos, true
+		// 			}
+		// 		}
+		// 	}
+	}
+
+	prog := strings.TrimRight(string(line), "| ")
+	if prog != p.lastProg {
+		output, err := executeOne(p.eval.Clone(), p.input, prog)
+		if err != nil {
+			if !strings.HasSuffix(string(line), " ") && strings.Contains(err.Error(), "identifier") {
+				return
+			}
+			output = fmt.Sprintf("Error: %v", err)
+		}
+		w := p.term.GetConfig().FuncGetWidth()
+		if len(output) > w {
+			output = output[:w-20] + "..." + output[len(output)-15:]
+		}
+		p.lastProg = prog
+		p.lastOutput = output
+	}
+	fmt.Fprintf(p.term, "\n%v", p.lastOutput)                   // write output on next line
+	fmt.Fprintf(p.term, "\033[1F\033[%dC", len("slouch> ")+pos) // restore cursor
+	return
+}
+
+func doReq(req *http.Request) []byte {
+	req.AddCookie(&http.Cookie{
+		Name:  "session",
+		Value: os.Getenv("AOC_TOKEN"),
+	})
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer resp.Body.Close()
+	data, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		log.Fatal(err)
+	}
+	return data
+}
+
+func getPuzzle(year, day int) string {
+	req, _ := http.NewRequest(http.MethodGet, fmt.Sprintf("https://adventofcode.com/%v/day/%v", year, day), nil)
+	return string(doReq(req))
+}
+
+func getInput(year, day int) []byte {
+	req, _ := http.NewRequest(http.MethodGet, fmt.Sprintf("https://adventofcode.com/%v/day/%v/input", year, day), nil)
+	return doReq(req)
+}
+
+func postSolution(year, day, part int, answer string) string {
+	body := strings.NewReader(fmt.Sprintf("level=%v&answer=%v", part, answer))
+	req, _ := http.NewRequest(http.MethodPost, fmt.Sprintf("https://adventofcode.com/%v/day/%v/answer", year, day), body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	return extractMain(string(doReq(req)))
+}
+
+func extractMain(resp string) string {
+	i := strings.Index(resp, "<main>")
+	if i == -1 {
+		return resp
+	}
+	resp = strings.TrimSpace(resp[i+len("<main>") : strings.Index(resp, "</main>")])
+	resp = strings.TrimSuffix(strings.TrimPrefix(resp, "<article>"), "</article>")
+	resp = strings.TrimSuffix(strings.TrimPrefix(resp, "<p>"), "</p>")
+	return resp
+}
+
+func fetchInput(day, year int) (string, error) {
+	filename := fmt.Sprintf("%v_day%v.txt", year, day)
+	if _, err := os.Stat(filename); err != nil {
+		est, err := time.LoadLocation("EST")
+		if err != nil {
+			log.Fatal(err)
+		}
+		if t := time.Date(year, time.December, day, 0, 0, 0, 0, est); time.Until(t) > 0 {
+			log.Printf("Puzzle not unlocked yet! Sleeping for %v...", time.Until(t).Round(time.Second))
+			time.Sleep(time.Until(t) + 3*time.Second) // don't want to fire too early
+		}
+		log.Println("Downloading input...")
+		if err := ioutil.WriteFile(filename, getInput(year, day), 0660); err != nil {
+			log.Fatal(err)
+		}
+	}
+	input, err := ioutil.ReadFile(filename)
+	return strings.TrimSpace(string(input)), err
 }

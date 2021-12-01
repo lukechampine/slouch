@@ -157,7 +157,7 @@ first (take 2 |< {caesar (int y) x} == "northpole-object-storage-") | .1
 			year: 2016, day: 5,
 			prog: `
 vvv
-func MD5(s string) string {
+	func MD5(s string) string {
 		sum := md5.Sum([]byte(s))
 		return hex.EncodeToString(sum[:])
 	}

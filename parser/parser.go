@@ -25,7 +25,7 @@ const (
 	precCmp
 	precSum
 	precProd
-	precNeg
+	precNegative
 	precCall
 	precDot
 )
@@ -45,7 +45,7 @@ var precedences = map[token.Kind]int{
 	token.Or:            precOr,
 
 	token.Plus:  precSum,
-	token.Neg:   precSum,
+	token.Minus: precSum,
 	token.Star:  precProd,
 	token.Slash: precProd,
 	token.Mod:   precProd,
@@ -79,8 +79,8 @@ func newParser(ts []token.Token) *Parser {
 		token.Lbrace:        p.parseArray,
 		token.Lparen:        p.parseParens,
 		token.Lbracket:      p.parseLambda,
-		token.Neg:           p.parsePrefixInfixOp,
 		token.Plus:          p.parsePrefixInfixOp,
+		token.Minus:         p.parsePrefixInfixOp,
 		token.Star:          p.parsePrefixInfixOp,
 		token.Slash:         p.parsePrefixInfixOp,
 		token.Mod:           p.parsePrefixInfixOp,
@@ -94,6 +94,7 @@ func newParser(ts []token.Token) *Parser {
 		token.And:           p.parsePrefixInfixOp,
 		token.Or:            p.parsePrefixInfixOp,
 		token.Dot:           p.parsePrefixInfixOp,
+		token.Negative:      p.parseNegative,
 		token.Hole:          p.parseHole,
 		token.Splat:         p.parseSplat,
 		token.Rep:           p.parseRep,
@@ -103,7 +104,7 @@ func newParser(ts []token.Token) *Parser {
 		token.PipeSplat:     p.parsePipe,
 		token.PipeRep:       p.parsePipe,
 		token.Plus:          p.parseInfixOp,
-		token.Neg:           p.parseInfixOp,
+		token.Minus:         p.parseInfixOp,
 		token.Star:          p.parseInfixOp,
 		token.Slash:         p.parseInfixOp,
 		token.Mod:           p.parseInfixOp,
@@ -262,6 +263,11 @@ func (p *Parser) parseExpr(prec int) ast.Expr {
 func (p *Parser) parseInteger() ast.Expr    { return ast.Integer{Token: p.cur(), Value: p.cur().Lit} }
 func (p *Parser) parseIdentifier() ast.Expr { return ast.Ident{Token: p.cur(), Name: p.cur().Lit} }
 func (p *Parser) parseHole() ast.Expr       { return ast.Hole{Token: p.cur()} }
+func (p *Parser) parseNegative() ast.Expr {
+	t := p.cur()
+	p.advance()
+	return ast.Negative{Token: t, Value: p.parseExpr(precNegative)}
+}
 
 func (p *Parser) parseString() ast.Expr {
 	s := p.cur().Lit

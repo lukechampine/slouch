@@ -19,6 +19,7 @@ const (
 	Greater
 	LessEquals
 	GreaterEquals
+	Negative
 	DivisibleBy
 	And
 	Or
@@ -26,7 +27,7 @@ const (
 	Dot
 	Colon
 	Plus
-	Neg
+	Minus
 	Star
 	Slash
 	Mod
@@ -61,6 +62,7 @@ func (k Kind) String() string {
 		Greater:       "Greater",
 		LessEquals:    "LessEquals",
 		GreaterEquals: "GreaterEquals",
+		Negative:      "Negative",
 		DivisibleBy:   "DivisibleBy",
 		And:           "And",
 		Or:            "Or",
@@ -68,7 +70,7 @@ func (k Kind) String() string {
 		Dot:           "Dot",
 		Colon:         "Colon",
 		Plus:          "Plus",
-		Neg:           "Neg",
+		Minus:         "Minus",
 		Star:          "Star",
 		Slash:         "Slash",
 		Mod:           "Mod",

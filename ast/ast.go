@@ -83,6 +83,16 @@ func (r Rep) isNode()        {}
 func (r Rep) isExpr()        {}
 func (r Rep) String() string { return "-: " + r.Fn.String() }
 
+// e.g. "--foo"
+type Negative struct {
+	Token token.Token
+	Value Expr
+}
+
+func (r Negative) isNode()        {}
+func (r Negative) isExpr()        {}
+func (r Negative) String() string { return "--" + r.Value.String() }
+
 // e.g. [ 1 2 3 ]
 type Array struct {
 	Token token.Token
@@ -250,6 +260,8 @@ func Visit(n Node, fn func(Node) bool) {
 		Visit(n.Fn, fn)
 	case Rep:
 		Visit(n.Fn, fn)
+	case Negative:
+		Visit(n.Value, fn)
 	case Array:
 		for _, e := range n.Elems {
 			Visit(e, fn)

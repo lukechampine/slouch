@@ -49,8 +49,14 @@ func (env *Environment) newScope() *Environment {
 	}
 }
 
+func (env *Environment) Clone() *Environment {
+	return env.newScope()
+}
+
 func (env *Environment) Run(p ast.Program, input string, output func(Value)) error {
-	env.idents["input"] = makeString(input)
+	if _, ok := env.idents["input"]; !ok {
+		env.idents["input"] = makeString(input)
+	}
 	for _, n := range p.Stmts {
 		switch n := n.(type) {
 		case ast.SnippetStmt:
@@ -216,6 +222,8 @@ func (env *Environment) Eval(e ast.Expr) Value {
 			return env.apply(fn, args...)
 		})
 		return makePartial(rfn, make([]Value, 1))
+	case ast.Negative:
+		return internalNegate(env.Eval(e.Value))
 	case ast.Pipe:
 		l, r := env.Eval(e.Left), env.Eval(e.Right)
 		switch e.Token.Kind {
@@ -278,7 +286,7 @@ func (env *Environment) Eval(e ast.Expr) Value {
 		}
 		return a
 	default:
-		panic(fmt.Sprintf("unhandled node type %T", e))
+		panic(fmt.Sprintf("eval: unhandled node type %T", e))
 	}
 }
 
@@ -310,11 +318,10 @@ func (env *Environment) apply(fn Value, args ...Value) Value {
 				pargs[i], args = args[0], args[1:]
 			}
 		}
-		pv := makePartial(fn, pargs)
-		if pv.have() < len(pv.args) {
+		if pv := makePartial(fn, pargs); pv.have() < len(pv.args) {
 			return pv // still a partial
 		}
-		return env.apply(fn.fn, pv.args...)
+		return env.apply(fn.fn, pargs...)
 
 	case HoleValue:
 		if len(args) != 1 {

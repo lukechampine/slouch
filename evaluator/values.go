@@ -27,7 +27,7 @@ type StringValue struct {
 }
 
 func (sv *StringValue) hash() valueHash { return valueHash("String:" + sv.String()) }
-func (sv *StringValue) String() string  { return sv.s }
+func (sv *StringValue) String() string  { return strconv.Quote(sv.s) }
 
 func makeString(s string) *StringValue { return &StringValue{s: s} }
 
@@ -56,6 +56,19 @@ type ArrayValue struct {
 
 func (av *ArrayValue) hash() valueHash { return valueHash("Array:" + av.String()) }
 func (av *ArrayValue) String() string {
+	{
+		var sb strings.Builder
+		for i, e := range av.elems {
+			sv, ok := e.(*StringValue)
+			if !ok || len(sv.s) != 1 {
+				break
+			}
+			sb.WriteString(sv.s)
+			if i == len(av.elems)-1 {
+				return strconv.Quote(sb.String())
+			}
+		}
+	}
 	strs := make([]string, len(av.elems))
 	for i := range strs {
 		strs[i] = av.elems[i].String()
