@@ -10,6 +10,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/chzyer/readline"
@@ -95,13 +96,13 @@ func main() {
 			log.Fatal(err)
 		}
 		defer prompt.Close()
-		prev := &evalPreview{eval, prompt.Terminal, input, "", ""}
+		prev := &evalPreview{eval: eval, term: prompt.Terminal}
 		prompt.Config.Listener = prev
 		logf := func(s string, args ...interface{}) {
-			fmt.Fprintf(prompt, s, args...)
+			fmt.Fprintf(prompt, "\r"+s, args...)
 		}
 		log := func(args ...interface{}) {
-			fmt.Fprintln(prompt, args...)
+			fmt.Fprint(prompt, "\r"+fmt.Sprintln(args...))
 		}
 		for {
 			line, err := prompt.Readline()
@@ -113,10 +114,11 @@ func main() {
 			} else if len(line) == 0 {
 				continue
 			}
-			prompt.Terminal.Print("\r")
 
 			if !strings.HasPrefix(line, ":") {
+				prev.mu.Lock()
 				solution, err = executeOne(eval, input, line)
+				prev.mu.Unlock()
 				if err != nil {
 					log("Error:", err)
 				} else {
@@ -128,6 +130,7 @@ func main() {
 			switch args[0] {
 			case ":reset":
 				eval = evaluator.New()
+				prev.eval = eval
 				log("Reset evaluator")
 
 			case ":setday":
@@ -244,7 +247,7 @@ func execute(eval *evaluator.Environment, input, prog string, w io.Writer) (err 
 		}()
 		p := parser.Parse(lexer.Tokenize(prog))
 		err = eval.Run(p, input, func(v evaluator.Value) {
-			fmt.Fprintln(w, v)
+			fmt.Fprintln(w, "\r"+v.String())
 		})
 	}()
 	return
@@ -268,9 +271,12 @@ type evalPreview struct {
 	input      string
 	lastProg   string
 	lastOutput string
+	mu         sync.Mutex
 }
 
 func (p *evalPreview) OnChange(line []rune, pos int, key rune) (newLine []rune, newPos int, ok bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	if strings.HasPrefix(string(line), ":") {
 		return
 	}
@@ -375,7 +381,7 @@ func fetchInput(day, year int) (string, error) {
 			log.Fatal(err)
 		}
 		if t := time.Date(year, time.December, day, 0, 0, 0, 0, est); time.Until(t) > 0 {
-			log.Printf("Puzzle not unlocked yet! Sleeping for %v...", time.Until(t).Round(time.Second))
+			log.Printf("\rPuzzle not unlocked yet! Sleeping for %v...", time.Until(t).Round(time.Second))
 			time.Sleep(time.Until(t) + 3*time.Second) // don't want to fire too early
 		}
 		log.Println("Downloading input...")
