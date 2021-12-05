@@ -34,6 +34,7 @@ var builtins = [...]*BuiltinValue{
 	makeBuiltin("alpha", builtinAlpha),
 	makeBuiltin("any", builtinAny),
 	makeBuiltin("append", builtinAppend),
+	makeBuiltin("apply", builtinApply),
 	makeBuiltin("assoc", builtinAssoc),
 	makeBuiltin("caesar", builtinCaesar),
 	makeBuiltin("chars", builtinChars),
@@ -53,11 +54,14 @@ var builtins = [...]*BuiltinValue{
 	makeBuiltin("dropWhile", builtinDropWhile),
 	makeBuiltin("dups", builtinDups),
 	makeBuiltin("enum", builtinEnum),
+	makeBuiltin("fromBase", builtinFromBase),
+	makeBuiltin("toBase", builtinToBase),
 	makeBuiltin("filter", builtinFilter),
 	makeBuiltin("first", builtinFirst),
 	makeBuiltin("firstRepeat", builtinFirstRepeat),
 	makeBuiltin("flatten", builtinFlatten),
 	makeBuiltin("fold", builtinFold),
+	makeBuiltin("fold1", builtinFold1),
 	makeBuiltin("hasKey", builtinHasKey),
 	makeBuiltin("hasPrefix", builtinHasPrefix),
 	makeBuiltin("hasVal", builtinHasVal),
@@ -76,10 +80,13 @@ var builtins = [...]*BuiltinValue{
 	makeBuiltin("len", builtinLen),
 	makeBuiltin("lines", builtinLines),
 	makeBuiltin("map", builtinMap),
+	makeBuiltin("concatmap", builtinConcatmap),
 	makeBuiltin("max", builtinMax),
 	makeBuiltin("maxBy", builtinMaxBy),
 	makeBuiltin("maxIndex", builtinMaxIndex),
 	makeBuiltin("memo", builtinMemo),
+	makeBuiltin("move", builtinMove),
+	makeBuiltin("draw", builtinDraw),
 	makeBuiltin("min", builtinMin),
 	makeBuiltin("minBy", builtinMinBy),
 	makeBuiltin("minIndex", builtinMinIndex),
@@ -163,6 +170,8 @@ func makeBuiltin(name string, fn interface{}) *BuiltinValue {
 					argVals[i] = reflect.ValueOf(it)
 				} else if arg.Type() == iteratorTyp && t.In(i) == arrayTyp {
 					argVals[i] = reflect.ValueOf(builtinCollect(arg.Interface().(*IteratorValue)))
+				} else if arg.Type() == iteratorTyp && t.In(i) == stringTyp {
+					argVals[i] = reflect.ValueOf(builtinConcat(arg.Interface().(*IteratorValue)))
 				} else if arg.Type() == arrayTyp && t.In(i) == stringTyp {
 					argVals[i] = reflect.ValueOf(builtinConcat(internalArrayIterator(arg.Interface().(*ArrayValue))))
 				} else if !arg.Type().AssignableTo(t.In(i)) {
@@ -1126,6 +1135,26 @@ func builtinMap(env *Environment, fn Value, it *IteratorValue) *IteratorValue {
 	}
 }
 
+func builtinConcatmap(env *Environment, fn Value, it *IteratorValue) *IteratorValue {
+	cur := &IteratorValue{next: func() Value { return nil }}
+	return &IteratorValue{
+		next: func() Value {
+		again:
+			n := cur.next()
+			if n == nil {
+				v := it.next()
+				if v == nil {
+					return nil
+				}
+				cur = internalToIterator(env.apply1(fn, v))
+				goto again
+			}
+			return n
+		},
+		infinite: it.infinite,
+	}
+}
+
 func builtinSum(it *IteratorValue) Value {
 	sum := it.next()
 	if sum == nil {
@@ -1214,15 +1243,19 @@ func builtinLen(it *IteratorValue) *IntegerValue {
 	return makeInteger(n)
 }
 
-func builtinFold(env *Environment, fn Value, it *IteratorValue) Value {
-	acc := it.next()
-	if acc == nil {
-		panic("fold: empty iterator")
-	}
+func builtinFold(env *Environment, fn Value, acc Value, it *IteratorValue) Value {
 	for v := it.next(); v != nil; v = it.next() {
 		acc = env.apply(fn, acc, v)
 	}
 	return acc
+}
+
+func builtinFold1(env *Environment, fn Value, it *IteratorValue) Value {
+	acc := it.next()
+	if acc == nil {
+		panic("fold1: empty iterator")
+	}
+	return builtinFold(env, fn, acc, it)
 }
 
 func builtinScan(env *Environment, fn Value, it *IteratorValue) *IteratorValue {
@@ -1242,13 +1275,23 @@ func builtinScan(env *Environment, fn Value, it *IteratorValue) *IteratorValue {
 	}
 }
 
+func builtinApply(env *Environment, fns *IteratorValue, v Value) Value {
+	for fn := fns.next(); fn != nil; fn = fns.next() {
+		v = env.apply1(fn, v)
+	}
+	return v
+}
+
 func builtinIterate(env *Environment, fn Value, v Value) *IteratorValue {
+	first := true
 	return &IteratorValue{
 		next: func() Value {
-			r := v
-			v = internalClone(v)
-			v = env.apply1(fn, v)
-			return r
+			if !first {
+				v = internalClone(v)
+				v = env.apply1(fn, v)
+			}
+			first = false
+			return v
 		},
 		infinite: true,
 	}
@@ -1643,6 +1686,18 @@ func builtinIota() *IteratorValue {
 	}
 }
 
+func builtinFromBase(base *IntegerValue, s *StringValue) *IntegerValue {
+	n, err := strconv.ParseInt(s.s, int(base.i), 64)
+	if err != nil {
+		panic(err)
+	}
+	return makeInteger(n)
+}
+
+func builtinToBase(base *IntegerValue, i *IntegerValue) *StringValue {
+	return makeString(strconv.FormatInt(i.i, int(base.i)))
+}
+
 func builtinEnum(start, end *IntegerValue) *IteratorValue {
 	n := start.i
 	n--
@@ -1714,6 +1769,8 @@ func builtinContains(c Value, it Value) *BoolValue {
 			}
 		}
 		return makeBool(false)
+	case *MapValue:
+		return makeBool(it.get(c) != nil)
 	case *IteratorValue:
 		for v := it.next(); v != nil; v = it.next() {
 			if internalEquals(v, c) {
@@ -1796,6 +1853,57 @@ func builtinMax(it *IteratorValue) Value {
 		}
 	}
 	return max
+}
+
+func builtinMove(cmd *ArrayValue, pos *ArrayValue) *ArrayValue {
+	pos = internalClone(pos).(*ArrayValue)
+	switch cmd.elems[0].(*StringValue).s {
+	case "u":
+		pos.elems[1] = builtinAdd(pos.elems[1], cmd.elems[1])
+	case "d":
+		pos.elems[1] = builtinSub(pos.elems[1], cmd.elems[1])
+	case "l":
+		pos.elems[0] = builtinSub(pos.elems[0], cmd.elems[1])
+	case "r":
+		pos.elems[0] = builtinAdd(pos.elems[0], cmd.elems[1])
+	default:
+		panic("move: invalid direction")
+	}
+	return pos
+}
+
+func builtinDraw(pos, dest *ArrayValue) *IteratorValue {
+	dx := dest.elems[0].(*IntegerValue).i - pos.elems[0].(*IntegerValue).i
+	dy := dest.elems[1].(*IntegerValue).i - pos.elems[1].(*IntegerValue).i
+	// gcd
+	a, b := dx, dy
+	if a < 0 {
+		a = -a
+	}
+	if b < 0 {
+		b = -b
+	}
+	for b != 0 {
+		a, b = b, a%b
+	}
+	gcd := a
+	stepX := makeInteger(dx / gcd)
+	stepY := makeInteger(dy / gcd)
+
+	next := internalClone(pos).(*ArrayValue)
+	return &IteratorValue{
+		next: func() Value {
+			if internalEquals(pos, dest) {
+				return nil
+			}
+			pos = internalClone(next).(*ArrayValue)
+			next = makeArray([]Value{
+				builtinAdd(next.elems[0], stepX),
+				builtinAdd(next.elems[1], stepY),
+			})
+			return pos
+		},
+	}
 }
 
 func builtinMin(it *IteratorValue) Value {
