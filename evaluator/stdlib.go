@@ -103,6 +103,7 @@ var builtins = [...]*BuiltinValue{
 	makeBuiltin("runs", builtinRuns),
 	makeBuiltin("same", builtinSame),
 	makeBuiltin("scan", builtinScan),
+	makeBuiltin("set", builtinSet),
 	makeBuiltin("sort", builtinSort),
 	makeBuiltin("sortBy", builtinSortBy),
 	makeBuiltin("sorted", builtinSorted),
@@ -1285,6 +1286,43 @@ func builtinScan(env *Environment, fn Value, it *IteratorValue) *IteratorValue {
 			return acc
 		},
 		infinite: it.infinite,
+	}
+}
+
+func builtinSet(env *Environment, key, val, in Value) Value {
+	set := func(prev Value) Value {
+		if fn, ok := val.(*PartialValue); ok {
+			return env.apply(fn, prev)
+		}
+		return val
+	}
+	switch in := in.(type) {
+	case *ArrayValue:
+		in = internalClone(in).(*ArrayValue)
+		i := key.(*IntegerValue).i
+		in.elems[i] = set(in.elems[i])
+		return in
+	case *MapValue:
+		in = internalClone(in).(*MapValue)
+		in.set(key, set(in.get(key)))
+		return in
+	case *IteratorValue:
+		i := key.(*IntegerValue).i
+		return &IteratorValue{
+			next: func() Value {
+				v := in.next()
+				if v == nil {
+					return nil
+				}
+				if i == 0 {
+					return set(v)
+				}
+				i--
+				return v
+			},
+		}
+	default:
+		panic(fmt.Sprintf("set: invalid collection type %T", in))
 	}
 }
 
