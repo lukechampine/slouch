@@ -74,7 +74,12 @@ func (env *Environment) Run(p ast.Program, input string, output func(Value)) err
 			}
 			// variables should always be arrays, not iterators, because we
 			// don't want to consume them multiple times
-			env.idents[n.Name.Name] = internalClone(v)
+			if it, ok := v.(*IteratorValue); ok {
+				v = builtinCollect(it)
+			} else {
+				v = internalClone(v)
+			}
+			env.idents[n.Name.Name] = v
 		case ast.ExprStmt:
 			// if the result is a partially-applied function missing its last argument,
 			// supply input as the final argument

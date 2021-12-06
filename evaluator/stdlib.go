@@ -328,10 +328,23 @@ func internalEquals(l, r Value) bool {
 }
 
 func internalClone(v Value) Value {
-	if it, ok := v.(*IteratorValue); ok {
-		return builtinCollect(it)
+	switch v := v.(type) {
+	case *IteratorValue:
+		return internalArrayIterator(builtinCollect(v))
+	case *ArrayValue:
+		return makeArray(append([]Value(nil), v.elems...))
+	case *MapValue:
+		m := &MapValue{
+			keys: append([]Value(nil), v.keys...),
+			vals: append([]Value(nil), v.vals...),
+		}
+		for h, i := range v.indices {
+			m.indices[h] = i
+		}
+		return m
+	default:
+		return v
 	}
-	return v
 }
 
 func builtinCollect(it *IteratorValue) *ArrayValue {
