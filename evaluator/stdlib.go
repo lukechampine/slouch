@@ -30,6 +30,7 @@ var infixFns = map[token.Kind]*BuiltinValue{
 }
 
 var builtins = [...]*BuiltinValue{
+	makeBuiltin("abs", builtinAbs),
 	makeBuiltin("all", builtinAll),
 	makeBuiltin("alpha", builtinAlpha),
 	makeBuiltin("any", builtinAny),
@@ -90,6 +91,8 @@ var builtins = [...]*BuiltinValue{
 	makeBuiltin("min", builtinMin),
 	makeBuiltin("minBy", builtinMinBy),
 	makeBuiltin("minIndex", builtinMinIndex),
+	makeBuiltin("mean", builtinMean),
+	makeBuiltin("median", builtinMedian),
 	makeBuiltin("none", builtinNone),
 	makeBuiltin("not", builtinNot),
 	makeBuiltin("partition", builtinPartition),
@@ -1697,6 +1700,13 @@ func builtinAny(env *Environment, fn Value, it *IteratorValue) *BoolValue {
 	return makeBool(false)
 }
 
+func builtinAbs(env *Environment, v *IntegerValue) *IntegerValue {
+	if v.i < 0 {
+		return makeInteger(-v.i)
+	}
+	return v
+}
+
 func builtinAll(env *Environment, fn Value, it *IteratorValue) *BoolValue {
 	for v := it.next(); v != nil; v = it.next() {
 		if !internalTruthy(env.apply1(fn, v)) {
@@ -1893,19 +1903,6 @@ func builtinHistogram(it *IteratorValue) *MapValue {
 	return m
 }
 
-func builtinMax(it *IteratorValue) Value {
-	max := it.next()
-	if max == nil {
-		panic("max: empty iterator")
-	}
-	for v := it.next(); v != nil; v = it.next() {
-		if internalLess(max, v) {
-			max = v
-		}
-	}
-	return max
-}
-
 func builtinMove(cmd *ArrayValue, pos *ArrayValue) *ArrayValue {
 	pos = internalClone(pos).(*ArrayValue)
 	switch cmd.elems[0].(*StringValue).s {
@@ -1955,6 +1952,19 @@ func builtinDraw(pos, dest *ArrayValue) *IteratorValue {
 			return pos
 		},
 	}
+}
+
+func builtinMax(it *IteratorValue) Value {
+	max := it.next()
+	if max == nil {
+		panic("max: empty iterator")
+	}
+	for v := it.next(); v != nil; v = it.next() {
+		if internalLess(max, v) {
+			max = v
+		}
+	}
+	return max
 }
 
 func builtinMin(it *IteratorValue) Value {
@@ -2062,6 +2072,24 @@ func builtinMinIndex(it Value) Value {
 		panic("minIndex: empty")
 	}
 	return minIndex
+}
+
+func builtinMean(it *IteratorValue) *IntegerValue {
+	var n, sum int64
+	for v := it.next(); v != nil; v = it.next() {
+		sum += v.(*IntegerValue).i
+		n++
+	}
+	return makeInteger(sum / n)
+}
+
+func builtinMedian(it *IteratorValue) *IntegerValue {
+	a := builtinSort(it).(*ArrayValue)
+	v := a.elems[len(a.elems)/2].(*IntegerValue)
+	if len(a.elems)%2 == 0 {
+		v.i = (v.i + a.elems[len(a.elems)/2+1].(*IntegerValue).i) / 2
+	}
+	return v
 }
 
 func builtinMemo(env *Environment, fn Value) *BuiltinValue {
