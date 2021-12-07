@@ -290,6 +290,11 @@ func internalEquals(l, r Value) bool {
 		case *IntegerValue:
 			return l.i == r.i
 		}
+	case *BoolValue:
+		switch r := r.(type) {
+		case *BoolValue:
+			return l.b == r.b
+		}
 	case *StringValue:
 		switch r := r.(type) {
 		case *StringValue:
@@ -588,12 +593,22 @@ func builtinDigits(v Value) *ArrayValue {
 	}
 }
 
-func builtinInt(s *StringValue) *IntegerValue {
-	i, err := strconv.Atoi(s.s)
-	if err != nil {
-		panic(err)
+func builtinInt(v Value) *IntegerValue {
+	switch v := v.(type) {
+	case *StringValue:
+		i, err := strconv.Atoi(v.s)
+		if err != nil {
+			panic(err)
+		}
+		return makeInteger(int64(i))
+	case *BoolValue:
+		if !v.b {
+			return makeInteger(0)
+		}
+		return makeInteger(1)
+	default:
+		panic(fmt.Sprintf("int: unhandled type %T", v))
 	}
-	return makeInteger(int64(i))
 }
 
 func builtinInts(s *StringValue) *ArrayValue {
