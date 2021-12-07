@@ -88,7 +88,7 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "repl" {
 		log.SetFlags(0)
 
-		var input, solution string
+		var input, solution, cookie string
 		var day, year, part int
 		eval := evaluator.New()
 		prompt, err := readline.New("slouch> ")
@@ -142,6 +142,16 @@ func main() {
 				prev.input = input
 				eval = evaluator.New()
 				prev.eval = eval
+
+			case ":setcookie":
+				cookie = args[1]
+				if err := createCookieFile(cookie); err != nil {
+					log("Couldn't create cookie file:", err)
+					break
+				}
+				eval = evaluator.New()
+				prev.eval = eval
+				log("Cookie saved!")
 
 			case ":setday":
 				day, _ = strconv.Atoi(args[1])
@@ -338,10 +348,37 @@ func (p *evalPreview) OnChange(line []rune, pos int, key rune) (newLine []rune, 
 	return
 }
 
+func createCookieFile(cookie string) error {
+	return ioutil.WriteFile("cookie.txt", []byte(cookie), 0660)
+}
+
+func getCookieFromFile() string {
+	filename := "cookie.txt"
+	if _, err := os.Stat(filename); err != nil {
+		if err != nil {
+			log.Println("Cookie file not found! Please log into AoC or use :setcookie")
+		}
+		if err := createCookieFile(""); err != nil {
+			log.Fatal(err)
+		}
+	}
+	input, _ := ioutil.ReadFile(filename)
+	return strings.TrimSpace(string(input))
+}
+
+func getCookie() string {
+	cookie := os.Getenv("AOC_TOKEN")
+	if len(cookie) == 0 {
+		log.Println("Unable to fetch cookie automatically, reading from file...")
+		cookie = getCookieFromFile()
+	}
+	return cookie
+}
+
 func doReq(req *http.Request) []byte {
 	req.AddCookie(&http.Cookie{
 		Name:  "session",
-		Value: os.Getenv("AOC_TOKEN"),
+		Value: getCookie(),
 	})
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
