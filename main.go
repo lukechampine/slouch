@@ -133,13 +133,22 @@ func main() {
 				prev.eval = eval
 				log("Reset evaluator")
 
+			case ":setfile":
+				input, err = getFile(args[1])
+				if err != nil {
+					break
+				}
+				prev.input = input
+				eval = evaluator.New()
+				prev.eval = eval
+				logf("Read file %s!\n", args[1])
+
 			case ":setday":
 				day, _ = strconv.Atoi(args[1])
 				year, _ = strconv.Atoi(args[2])
 				part = 1
 				input, err = fetchInput(day, year)
 				if err != nil {
-					log("Couldn't load input:", err)
 					break
 				}
 				prev.input = input
@@ -373,6 +382,16 @@ func extractMain(resp string) string {
 	return resp
 }
 
+func getFile(filename string) (string, error) {
+	bytes, err := ioutil.ReadFile(filename)
+
+	if err != nil {
+		log.Printf("Couldn't read file: %s\n", filename, err)
+	}
+
+	return strings.TrimSpace(string(bytes)), err
+}
+
 func fetchInput(day, year int) (string, error) {
 	filename := fmt.Sprintf("%v_day%v.txt", year, day)
 	if _, err := os.Stat(filename); err != nil {
@@ -389,6 +408,6 @@ func fetchInput(day, year int) (string, error) {
 			log.Fatal(err)
 		}
 	}
-	input, err := ioutil.ReadFile(filename)
-	return strings.TrimSpace(string(input)), err
+
+	return getFile(filename)
 }
