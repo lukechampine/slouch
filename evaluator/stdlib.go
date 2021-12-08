@@ -44,6 +44,7 @@ var builtins = [...]*BuiltinValue{
 	makeBuiltin("concat", builtinConcat),
 	makeBuiltin("contains", builtinContains),
 	makeBuiltin("containsAny", builtinContainsAny),
+	makeBuiltin("in", builtinIn),
 	makeBuiltin("count", builtinCount),
 	makeBuiltin("cycle", builtinCycle),
 	makeBuiltin("delete", builtinDelete),
@@ -55,6 +56,7 @@ var builtins = [...]*BuiltinValue{
 	makeBuiltin("dropWhile", builtinDropWhile),
 	makeBuiltin("dups", builtinDups),
 	makeBuiltin("enum", builtinEnum),
+	makeBuiltin("fromDigits", builtinFromDigits),
 	makeBuiltin("fromBase", builtinFromBase),
 	makeBuiltin("toBase", builtinToBase),
 	makeBuiltin("filter", builtinFilter),
@@ -69,6 +71,7 @@ var builtins = [...]*BuiltinValue{
 	makeBuiltin("head", builtinHead),
 	makeBuiltin("histogram", builtinHistogram),
 	makeBuiltin("index", builtinIndex),
+	makeBuiltin("indexIn", builtinIndexIn),
 	makeBuiltin("inits", builtinInits),
 	makeBuiltin("int", builtinInt),
 	makeBuiltin("ints", builtinInts),
@@ -713,6 +716,10 @@ func builtinIndex(c Value, it *IteratorValue) Value {
 		i++
 	}
 	panic("index: no matches")
+}
+
+func builtinIndexIn(it *IteratorValue, c Value) Value {
+	return builtinIndex(c, it)
 }
 
 func builtinInits(it *IteratorValue) Value {
@@ -1781,6 +1788,22 @@ func builtinIota() *IteratorValue {
 	}
 }
 
+func builtinFromDigits(it *IteratorValue) *IntegerValue {
+	var b []byte
+	for v := it.next(); v != nil; v = it.next() {
+		i := v.(*IntegerValue).i
+		if i > 9 {
+			panic("fromDigits: invalid digit")
+		}
+		b = append(b, '0'+byte(i))
+	}
+	n, err := strconv.ParseInt(string(b), 10, 64)
+	if err != nil {
+		panic(err)
+	}
+	return makeInteger(n)
+}
+
 func builtinFromBase(base *IntegerValue, s *StringValue) *IntegerValue {
 	n, err := strconv.ParseInt(s.s, int(base.i), 64)
 	if err != nil {
@@ -1879,6 +1902,10 @@ func builtinContains(c Value, it Value) *BoolValue {
 	default:
 		panic(fmt.Sprintf("contains: unhandled type %T", it))
 	}
+}
+
+func builtinIn(it Value, c Value) *BoolValue {
+	return builtinContains(c, it)
 }
 
 func builtinContainsAny(cs *ArrayValue, it Value) Value {
