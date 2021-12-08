@@ -182,66 +182,20 @@ func main() {
 		return
 	}
 
-	var prog string
-
-	// 2020 day 3
-	prog = `
-;=input boolgrid "#."
-;iterate (offset [3,1]) [0,0] | takeWhile (inbounds input) | map (input._) | sum
-`
-
-	// 2020 day 10
-	prog = `
-=input ints
-sort | deltas | histogram |: (_.1 + 1) * (_.3 + 1)
-`
-
-	// 2015 day 3
-	prog = `
-=input chars | dirs "^v<>"
-=a actor [0,0]
-=a move a
-
-`
-
-	// 2016 day 2
-	prog = `
-=input lines | map (dirs "UDLR")
-=m maze (==" ") [
-	"123",
-	"456",
-	"789",
-]
-=a actor (center m) m
-map (move a | .tile)
-
-=m maze (==" ") [
-	"  1  ",
-	" 234 ",
-	"56789",
-	" ABC ",
-	"  D  ",
-]
-=a actor (center m) m
-map (move a | .tile)
-`
-
-	// 2018 day 3
-	prog = `
-=input lines | map (ints | struct ["id", "x", "y", "w", "h"])  ;;#123 @ 3,2: 5x4
-=makerect -: rectrel [_.id] _.x _.y _.w _.h
-=g map makerect | superimpose (concat)
-count (len > 1) g
-first (len == 1) g | head
-`
-
-	input, err := ioutil.ReadFile(os.Args[1])
+	if len(os.Args) != 3 {
+		log.Fatal("Usage: slouch <prog> <input>")
+	}
+	prog, err := readFile(os.Args[1])
 	if err != nil {
-		panic(err)
+		log.Fatalln("couldn't read program:", err)
+	}
+	input, err := readFile(os.Args[2])
+	if err != nil {
+		log.Fatalln("couldn't read input:", err)
 	}
 	p := parser.Parse(lexer.Tokenize(prog))
 	start := time.Now()
-	err = evaluator.New().Run(p, string(input), func(v evaluator.Value) { fmt.Println(v) })
+	err = evaluator.New().Run(p, input, func(v evaluator.Value) { fmt.Println(v) })
 	if err != nil {
 		panic(err)
 	}
