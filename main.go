@@ -292,17 +292,13 @@ func (p *evalPreview) OnChange(line []rune, pos int, key rune) (newLine []rune, 
 	return
 }
 
-func createCookieFile(cookie string) error {
-	return ioutil.WriteFile("cookie.txt", []byte(cookie), 0660)
-}
-
 func getCookieFromFile() string {
 	filename := "cookie.txt"
 	if _, err := os.Stat(filename); err != nil {
 		if err != nil {
 			log.Println("Cookie file not found! Please place your token into AOC_SESSION or cookie.txt")
 		}
-		if err := createCookieFile(""); err != nil {
+		if err := ioutil.WriteFile(filename, []byte(""), 0660); err != nil {
 			log.Fatal(err)
 		}
 	}
