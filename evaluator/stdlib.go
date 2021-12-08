@@ -284,6 +284,13 @@ func internalNegate(v Value) Value {
 }
 
 func internalEquals(l, r Value) bool {
+	if a, ok := l.(*ArrayValue); ok {
+		l = internalArrayIterator(a)
+	}
+	if a, ok := r.(*ArrayValue); ok {
+		r = internalArrayIterator(a)
+	}
+
 	switch l := l.(type) {
 	case *IntegerValue:
 		switch r := r.(type) {
@@ -299,22 +306,13 @@ func internalEquals(l, r Value) bool {
 		switch r := r.(type) {
 		case *StringValue:
 			return l.s == r.s
-		}
-	case *ArrayValue:
-		switch r := r.(type) {
-		case *ArrayValue:
-			if len(l.elems) != len(r.elems) {
-				return false
-			}
-			for i := range l.elems {
-				if !internalEquals(l.elems[i], r.elems[i]) {
-					return false
-				}
-			}
-			return true
+		case *IteratorValue:
+			return l.s == builtinConcat(r).(*StringValue).s
 		}
 	case *IteratorValue:
 		switch r := r.(type) {
+		case *StringValue:
+			return internalEquals(l, internalStringIterator(r))
 		case *IteratorValue:
 			if l.infinite != r.infinite {
 				return false
@@ -339,13 +337,28 @@ func internalEquals(l, r Value) bool {
 func internalClone(v Value) Value {
 	switch v := v.(type) {
 	case *IteratorValue:
-		return internalArrayIterator(builtinCollect(v))
+		a := builtinCollect(v)
+		for i := range a.elems {
+			a.elems[i] = internalClone(a.elems[i])
+		}
+		return a
 	case *ArrayValue:
-		return makeArray(append([]Value(nil), v.elems...))
+		a := makeArray(append([]Value(nil), v.elems...))
+		for i := range a.elems {
+			a.elems[i] = internalClone(a.elems[i])
+		}
+		return a
 	case *MapValue:
 		m := &MapValue{
-			keys: append([]Value(nil), v.keys...),
-			vals: append([]Value(nil), v.vals...),
+			keys:    append([]Value(nil), v.keys...),
+			vals:    append([]Value(nil), v.vals...),
+			indices: make(map[valueHash]int),
+		}
+		for i := range m.keys {
+			m.keys[i] = internalClone(m.keys[i])
+		}
+		for i := range m.vals {
+			m.vals[i] = internalClone(m.vals[i])
 		}
 		for h, i := range v.indices {
 			m.indices[h] = i
@@ -362,6 +375,9 @@ func builtinCollect(it *IteratorValue) *ArrayValue {
 	}
 	var elems []Value
 	for e := it.next(); e != nil; e = it.next() {
+		if eit, ok := e.(*IteratorValue); ok {
+			e = builtinCollect(eit)
+		}
 		elems = append(elems, e)
 	}
 	return makeArray(elems)
@@ -594,6 +610,9 @@ func builtinDigits(v Value) *ArrayValue {
 }
 
 func builtinInt(v Value) *IntegerValue {
+	if it, ok := v.(*IteratorValue); ok {
+		v = builtinConcat(it)
+	}
 	switch v := v.(type) {
 	case *StringValue:
 		i, err := strconv.Atoi(v.s)
@@ -1788,13 +1807,16 @@ func builtinEnum(start, end *IntegerValue) *IteratorValue {
 	}
 }
 
-func builtinAssoc(a *ArrayValue) *MapValue {
-	if len(a.elems)%2 != 0 {
-		panic("dangling key in assoc")
-	}
+func builtinAssoc(it *IteratorValue) *MapValue {
 	m := makeMap()
-	for i := 0; i < len(a.elems); i += 2 {
-		m.set(a.elems[i], a.elems[i+1])
+	for {
+		k, v := it.next(), it.next()
+		if k == nil {
+			break
+		} else if v == nil {
+			panic("assoc: dangling key")
+		}
+		m.set(k, v)
 	}
 	return m
 }

@@ -74,10 +74,9 @@ func (env *Environment) Run(p ast.Program, input string, output func(Value)) err
 			}
 			// variables should always be arrays, not iterators, because we
 			// don't want to consume them multiple times
+			v = internalClone(v)
 			if it, ok := v.(*IteratorValue); ok {
 				v = builtinCollect(it)
-			} else {
-				v = internalClone(v)
 			}
 			env.idents[n.Name.Name] = v
 		case ast.ExprStmt:
@@ -287,7 +286,7 @@ func (env *Environment) Eval(e ast.Expr) Value {
 		}
 		a := makeArray(elems)
 		if e.Assoc {
-			return builtinAssoc(a)
+			return builtinAssoc(internalArrayIterator(a))
 		}
 		return a
 	default:
