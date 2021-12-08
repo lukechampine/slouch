@@ -292,33 +292,22 @@ func (p *evalPreview) OnChange(line []rune, pos int, key rune) (newLine []rune, 
 	return
 }
 
-func getCookieFromFile() string {
-	filename := "cookie.txt"
-	if _, err := os.Stat(filename); err != nil {
+func getToken() string {
+	token := os.Getenv("AOC_TOKEN")
+	if token == "" {
+		data, err := ioutil.ReadFile("token.txt")
 		if err != nil {
-			log.Println("Cookie file not found! Please place your token into AOC_SESSION or cookie.txt")
+			log.Fatal("Token not found! Please set AOC_TOKEN or put it in token.txt.")
 		}
-		if err := ioutil.WriteFile(filename, []byte(""), 0660); err != nil {
-			log.Fatal(err)
-		}
+		token = string(data)
 	}
-	input, _ := ioutil.ReadFile(filename)
-	return strings.TrimSpace(string(input))
-}
-
-func getCookie() string {
-	cookie := os.Getenv("AOC_TOKEN")
-	if len(cookie) == 0 {
-		log.Println("Unable to fetch cookie automatically, reading from file...")
-		cookie = getCookieFromFile()
-	}
-	return cookie
+	return token
 }
 
 func doReq(req *http.Request) []byte {
 	req.AddCookie(&http.Cookie{
 		Name:  "session",
-		Value: getCookie(),
+		Value: getToken(),
 	})
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
