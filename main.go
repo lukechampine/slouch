@@ -88,7 +88,7 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "repl" {
 		log.SetFlags(0)
 
-		var input, solution, cookie string
+		var input, solution string
 		var day, year, part int
 		eval := evaluator.New()
 		prompt, err := readline.New("slouch> ")
@@ -142,16 +142,6 @@ func main() {
 				prev.input = input
 				eval = evaluator.New()
 				prev.eval = eval
-
-			case ":setcookie":
-				cookie = args[1]
-				if err := createCookieFile(cookie); err != nil {
-					log("Couldn't create cookie file:", err)
-					break
-				}
-				eval = evaluator.New()
-				prev.eval = eval
-				log("Cookie saved!")
 
 			case ":setday":
 				day, _ = strconv.Atoi(args[1])
@@ -310,7 +300,7 @@ func getCookieFromFile() string {
 	filename := "cookie.txt"
 	if _, err := os.Stat(filename); err != nil {
 		if err != nil {
-			log.Println("Cookie file not found! Please log into AoC or use :setcookie")
+			log.Println("Cookie file not found! Please place your token into AOC_SESSION or cookie.txt")
 		}
 		if err := createCookieFile(""); err != nil {
 			log.Fatal(err)
