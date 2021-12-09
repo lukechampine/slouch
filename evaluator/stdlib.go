@@ -1844,18 +1844,40 @@ func builtinToBase(base *IntegerValue, i *IntegerValue) *StringValue {
 	return makeString(strconv.FormatInt(i.i, int(base.i)))
 }
 
-func builtinEnum(start, end *IntegerValue) *IteratorValue {
-	n := start.i
-	n--
-	return &IteratorValue{
-		next: func() Value {
-			if n >= end.i {
-				return nil
-			}
-			n++
-			return makeInteger(n)
-		},
+func builtinEnum(start, end Value) *IteratorValue {
+	switch start := start.(type) {
+	case *IntegerValue:
+		n := start.i
+		n--
+		return &IteratorValue{
+			next: func() Value {
+				if n >= end.(*IntegerValue).i {
+					return nil
+				}
+				n++
+				return makeInteger(n)
+			},
+		}
+	case *ArrayValue:
+		n0 := start.elems[0].(*IntegerValue).i
+		n1 := start.elems[1].(*IntegerValue).i
+		e0 := end.(*ArrayValue).elems[0].(*IntegerValue).i
+		e1 := end.(*ArrayValue).elems[1].(*IntegerValue).i
+		n0--
+		return &IteratorValue{
+			next: func() Value {
+				if n0 >= e0 && n1 >= e1 {
+					return nil
+				}
+				if n0++; n0 > e0 {
+					n0 = 0
+					n1++
+				}
+				return makeArray([]Value{makeInteger(n0), makeInteger(n1)})
+			},
+		}
 	}
+	panic("enum: invalid arguments")
 }
 
 func builtinAssoc(it *IteratorValue) *MapValue {
