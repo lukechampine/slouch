@@ -280,9 +280,36 @@ func (env *Environment) Eval(e ast.Expr) Value {
 			panic(fmt.Sprintf("unhandled pipe RHS %T", r))
 		}
 	case ast.Array:
+		if e.Assoc && len(e.Elems)%2 != 0 {
+			panic("assoc: dangling key")
+		}
 		elems := make([]Value, len(e.Elems))
+		var holes []int
 		for i := range elems {
 			elems[i] = env.Eval(e.Elems[i])
+			if isHole(elems[i]) {
+				holes = append(holes, i)
+			}
+		}
+		if len(holes) > 0 {
+			hs := make([]Value, len(holes))
+			for i := range hs {
+				hs[i] = HoleValue{}
+			}
+			return makePartial(&BuiltinValue{
+				name:  "arraypartial",
+				nargs: len(holes),
+				fn: func(env *Environment, args []Value) Value {
+					for i := range args {
+						elems[holes[i]] = args[i]
+					}
+					a := makeArray(elems)
+					if e.Assoc {
+						return builtinAssoc(internalArrayIterator(a))
+					}
+					return a
+				},
+			}, hs)
 		}
 		a := makeArray(elems)
 		if e.Assoc {
