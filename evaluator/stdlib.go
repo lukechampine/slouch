@@ -31,6 +31,7 @@ var infixFns = map[token.Kind]*BuiltinValue{
 
 var builtins = [...]*BuiltinValue{
 	makeBuiltin("abs", builtinAbs),
+	makeBuiltin("adj", builtinAdj),
 	makeBuiltin("all", builtinAll),
 	makeBuiltin("alpha", builtinAlpha),
 	makeBuiltin("any", builtinAny),
@@ -44,6 +45,7 @@ var builtins = [...]*BuiltinValue{
 	makeBuiltin("concat", builtinConcat),
 	makeBuiltin("contains", builtinContains),
 	makeBuiltin("containsAny", builtinContainsAny),
+	makeBuiltin("flood", builtinFlood),
 	makeBuiltin("in", builtinIn),
 	makeBuiltin("count", builtinCount),
 	makeBuiltin("cycle", builtinCycle),
@@ -128,6 +130,7 @@ var builtins = [...]*BuiltinValue{
 	makeBuiltin("uniqBy", builtinUniqBy),
 	makeBuiltin("vals", builtinVals),
 	makeBuiltin("window", builtinWindow),
+	makeBuiltin("within", builtinWithin),
 	makeBuiltin("words", builtinWords),
 	makeBuiltin("zip", builtinZip),
 	makeBuiltin("zipWith", builtinZipWith),
@@ -273,7 +276,7 @@ func internalLess(a, b Value) bool {
 			return a.s < b.s
 		}
 	}
-	panic(fmt.Sprintf("cannot compare %T to %T", a, b))
+	panic(fmt.Sprintf("cannot order %T relative to %T", a, b))
 }
 
 func internalNegate(v Value) Value {
@@ -585,6 +588,12 @@ func builtinChars(s *StringValue) *ArrayValue {
 }
 
 func builtinDigits(v Value) *ArrayValue {
+	if a, ok := v.(*ArrayValue); ok {
+		v = internalArrayIterator(a)
+	}
+	if it, ok := v.(*IteratorValue); ok {
+		v = builtinConcat(it)
+	}
 	switch v := v.(type) {
 	case *IntegerValue:
 		var elems []Value
@@ -1748,6 +1757,25 @@ func builtinAbs(env *Environment, v *IntegerValue) *IntegerValue {
 	return v
 }
 
+func builtinAdj(pos *ArrayValue) *ArrayValue {
+	px := pos.elems[0].(*IntegerValue).i
+	py := pos.elems[1].(*IntegerValue).i
+	return makeArray([]Value{
+		makeArray([]Value{makeInteger(px), makeInteger(py - 1)}),
+		makeArray([]Value{makeInteger(px), makeInteger(py + 1)}),
+		makeArray([]Value{makeInteger(px - 1), makeInteger(py)}),
+		makeArray([]Value{makeInteger(px + 1), makeInteger(py)}),
+	})
+}
+
+func builtinWithin(grid *ArrayValue, pos *ArrayValue) *BoolValue {
+	gx := grid.elems[0].(*IntegerValue).i
+	gy := grid.elems[1].(*IntegerValue).i
+	px := pos.elems[0].(*IntegerValue).i
+	py := pos.elems[1].(*IntegerValue).i
+	return makeBool(0 <= px && px <= gx && 0 <= py && py <= gy)
+}
+
 func builtinAll(env *Environment, fn Value, it *IteratorValue) *BoolValue {
 	for v := it.next(); v != nil; v = it.next() {
 		if !internalTruthy(env.apply1(fn, v)) {
@@ -1906,6 +1934,26 @@ func builtinContains(c Value, it Value) *BoolValue {
 
 func builtinIn(it Value, c Value) *BoolValue {
 	return builtinContains(c, it)
+}
+
+func builtinFlood(env *Environment, fn Value, p *ArrayValue) *ArrayValue {
+	seen := make(map[string]bool)
+	var visited []Value
+	queue := []*ArrayValue{p}
+	for len(queue) > 0 {
+		p, queue = queue[0], queue[1:]
+		if seen[p.String()] {
+			continue
+		}
+		seen[p.String()] = true
+		visited = append(visited, p)
+		for _, a := range builtinAdj(p).elems {
+			if internalTruthy(env.apply(fn, a)) {
+				queue = append(queue, a.(*ArrayValue))
+			}
+		}
+	}
+	return makeArray(visited)
 }
 
 func builtinContainsAny(cs *ArrayValue, it Value) Value {
