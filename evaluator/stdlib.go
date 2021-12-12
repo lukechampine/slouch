@@ -47,6 +47,7 @@ var builtins = [...]*BuiltinValue{
 	makeBuiltin("contains", builtinContains),
 	makeBuiltin("containsAny", builtinContainsAny),
 	makeBuiltin("dims", builtinDims),
+	makeBuiltin("dfs", builtinDFS),
 	makeBuiltin("flood", builtinFlood),
 	makeBuiltin("exhaust", builtinExhaust),
 	makeBuiltin("in", builtinIn),
@@ -70,6 +71,7 @@ var builtins = [...]*BuiltinValue{
 	makeBuiltin("flatten", builtinFlatten),
 	makeBuiltin("fold", builtinFold),
 	makeBuiltin("fold1", builtinFold1),
+	makeBuiltin("graph", builtinGraph),
 	makeBuiltin("hasKey", builtinHasKey),
 	makeBuiltin("hasPrefix", builtinHasPrefix),
 	makeBuiltin("hasVal", builtinHasVal),
@@ -556,32 +558,42 @@ func builtinDot(l, r Value) Value {
 	panic(fmt.Sprintf("unhandled type combination %T . %T", l, r))
 }
 
-func builtinSplit(split Value, it *IteratorValue) *IteratorValue {
-	var a []Value
-	return &IteratorValue{
-		next: func() Value {
-		again:
-			v := it.next()
-			if v == nil && a == nil {
-				return nil
-			}
-			if v == nil || internalEquals(v, split) {
-				v = makeArray(a)
-				a = nil
-				return v
-			}
-			a = append(a, v)
-			goto again
-		},
-		infinite: it.infinite,
+func builtinSplit(split Value, it Value) Value {
+	if a, ok := it.(*ArrayValue); ok {
+		it = internalArrayIterator(a)
 	}
 
-	// groups := strings.Split(strings.TrimSpace(s.s), split.s)
-	// elems := make([]Value, len(groups))
-	// for i := range elems {
-	// 	elems[i] = makeString(groups[i])
-	// }
-	// return makeArray(elems)
+	switch it := it.(type) {
+	case *StringValue:
+		groups := strings.Split(strings.TrimSpace(it.s), split.(*StringValue).s)
+		elems := make([]Value, len(groups))
+		for i := range elems {
+			elems[i] = makeString(groups[i])
+		}
+		return makeArray(elems)
+
+	case *IteratorValue:
+		var a []Value
+		return &IteratorValue{
+			next: func() Value {
+			again:
+				v := it.next()
+				if v == nil && a == nil {
+					return nil
+				}
+				if v == nil || internalEquals(v, split) {
+					v = makeArray(a)
+					a = nil
+					return v
+				}
+				a = append(a, v)
+				goto again
+			},
+			infinite: it.infinite,
+		}
+	default:
+		panic(fmt.Sprintf("split: invalid type %T", it))
+	}
 }
 
 func builtinJoin(between Value, it *IteratorValue) *IteratorValue {
@@ -597,8 +609,8 @@ func builtinJoin(between Value, it *IteratorValue) *IteratorValue {
 	}
 }
 
-func builtinLines(s *StringValue) *IteratorValue {
-	return builtinSplit(makeString("\n"), internalToIterator(s))
+func builtinLines(s *StringValue) Value {
+	return builtinSplit(makeString("\n"), s)
 }
 
 func builtinWords(s *StringValue) *ArrayValue {
@@ -1987,6 +1999,21 @@ func builtinInvert(m *MapValue) *MapValue {
 	return im
 }
 
+func builtinGraph(it *IteratorValue) *MapValue {
+	m := makeMap()
+	for {
+		v := it.next()
+		if v == nil {
+			break
+		}
+		a := builtinCollect(internalToIterator(v))
+		mv := m.getOr(a.elems[0], makeMap()).(*MapValue)
+		mv.set(a.elems[1], makeBool(true))
+		m.set(a.elems[0], mv)
+	}
+	return m
+}
+
 func builtinKeys(m *MapValue) *ArrayValue {
 	return makeArray(append([]Value(nil), m.keys...))
 }
@@ -2056,6 +2083,23 @@ func builtinDims(v Value) *ArrayValue {
 		// TODO
 		return builtinDims(builtinCollect(v))
 	}
+}
+
+func builtinDFS(env *Environment, fn Value, acc Value, start Value) Value {
+	var rec func(acc Value, path []Value) Value
+	rec = func(acc Value, path []Value) Value {
+		r := env.apply(fn, acc, path[len(path)-1], makeArray(path)).(*ArrayValue)
+		acc = r.elems[0]
+		next, ok := r.elems[1].(*ArrayValue)
+		if !ok {
+			next = builtinCollect(r.elems[1].(*IteratorValue))
+		}
+		for _, e := range next.elems {
+			acc = rec(acc, append(path, e))
+		}
+		return acc
+	}
+	return rec(acc, []Value{start})
 }
 
 func builtinFlood(env *Environment, fn Value, p *ArrayValue) *ArrayValue {
