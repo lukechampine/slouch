@@ -16,7 +16,6 @@ import (
 const (
 	precLowest = iota
 	precPipe
-	precSplat
 	precOr
 	precAnd
 	precNot
@@ -27,6 +26,7 @@ const (
 	precProd
 	precNegative
 	precCall
+	precSplat
 	precDot
 )
 
