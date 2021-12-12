@@ -32,6 +32,7 @@ var infixFns = map[token.Kind]*BuiltinValue{
 var builtins = [...]*BuiltinValue{
 	makeBuiltin("abs", builtinAbs),
 	makeBuiltin("adj", builtinAdj),
+	makeBuiltin("adj8", builtinAdj8),
 	makeBuiltin("all", builtinAll),
 	makeBuiltin("alpha", builtinAlpha),
 	makeBuiltin("any", builtinAny),
@@ -45,7 +46,9 @@ var builtins = [...]*BuiltinValue{
 	makeBuiltin("concat", builtinConcat),
 	makeBuiltin("contains", builtinContains),
 	makeBuiltin("containsAny", builtinContainsAny),
+	makeBuiltin("dims", builtinDims),
 	makeBuiltin("flood", builtinFlood),
+	makeBuiltin("exhaust", builtinExhaust),
 	makeBuiltin("in", builtinIn),
 	makeBuiltin("count", builtinCount),
 	makeBuiltin("cycle", builtinCycle),
@@ -1813,19 +1816,34 @@ func builtinAdj(pos *ArrayValue) *ArrayValue {
 	px := pos.elems[0].(*IntegerValue).i
 	py := pos.elems[1].(*IntegerValue).i
 	return makeArray([]Value{
-		makeArray([]Value{makeInteger(px), makeInteger(py - 1)}),
-		makeArray([]Value{makeInteger(px), makeInteger(py + 1)}),
-		makeArray([]Value{makeInteger(px - 1), makeInteger(py)}),
-		makeArray([]Value{makeInteger(px + 1), makeInteger(py)}),
+		makeArray([]Value{makeInteger(px - 1), makeInteger(py + 0)}),
+		makeArray([]Value{makeInteger(px + 0), makeInteger(py - 1)}),
+		makeArray([]Value{makeInteger(px + 0), makeInteger(py + 1)}),
+		makeArray([]Value{makeInteger(px + 1), makeInteger(py + 0)}),
 	})
 }
 
-func builtinWithin(grid *ArrayValue, pos *ArrayValue) *BoolValue {
-	gx := grid.elems[0].(*IntegerValue).i
-	gy := grid.elems[1].(*IntegerValue).i
+func builtinAdj8(pos *ArrayValue) *ArrayValue {
 	px := pos.elems[0].(*IntegerValue).i
 	py := pos.elems[1].(*IntegerValue).i
-	return makeBool(0 <= px && px <= gx && 0 <= py && py <= gy)
+	return makeArray([]Value{
+		makeArray([]Value{makeInteger(px - 1), makeInteger(py - 1)}),
+		makeArray([]Value{makeInteger(px - 1), makeInteger(py + 0)}),
+		makeArray([]Value{makeInteger(px - 1), makeInteger(py + 1)}),
+		makeArray([]Value{makeInteger(px + 0), makeInteger(py - 1)}),
+		makeArray([]Value{makeInteger(px + 0), makeInteger(py + 1)}),
+		makeArray([]Value{makeInteger(px + 1), makeInteger(py - 1)}),
+		makeArray([]Value{makeInteger(px + 1), makeInteger(py + 0)}),
+		makeArray([]Value{makeInteger(px + 1), makeInteger(py + 1)}),
+	})
+}
+
+func builtinWithin(dims *ArrayValue, pos *ArrayValue) *BoolValue {
+	dx := dims.elems[0].(*IntegerValue).i
+	dy := dims.elems[1].(*IntegerValue).i
+	px := pos.elems[0].(*IntegerValue).i
+	py := pos.elems[1].(*IntegerValue).i
+	return makeBool(0 <= px && px < dx && 0 <= py && py < dy)
 }
 
 func builtinAll(env *Environment, fn Value, it *IteratorValue) *BoolValue {
@@ -2010,6 +2028,23 @@ func builtinIn(it Value, c Value) *BoolValue {
 	return builtinContains(c, it)
 }
 
+func builtinDims(v Value) *ArrayValue {
+	switch v := v.(type) {
+	default:
+		return makeArray(nil)
+	case *ArrayValue:
+		if len(v.elems) == 0 {
+			return makeArray([]Value{makeInteger(0)})
+		}
+		inner := builtinDims(v.elems[0])
+		return makeArray(append(inner.elems, makeInteger(int64(len(v.elems)))))
+
+	case *IteratorValue:
+		// TODO
+		return builtinDims(builtinCollect(v))
+	}
+}
+
 func builtinFlood(env *Environment, fn Value, p *ArrayValue) *ArrayValue {
 	seen := make(map[string]bool)
 	var visited []Value
@@ -2028,6 +2063,29 @@ func builtinFlood(env *Environment, fn Value, p *ArrayValue) *ArrayValue {
 		}
 	}
 	return makeArray(visited)
+}
+
+func builtinExhaust(env *Environment, fn Value, q *ArrayValue, v Value) Value {
+	seen := make(map[valueHash]bool)
+	queue := q.elems
+	for len(queue) > 0 {
+		e := queue[0]
+		queue = queue[1:]
+		if seen[e.hash()] {
+			continue
+		}
+		seen[e.hash()] = true
+		r, ok := env.apply(fn, v, e).(*ArrayValue)
+		if !ok {
+			panic("exhaust: non-array result")
+		}
+		v = r.elems[0]
+		if it, ok := r.elems[1].(*IteratorValue); ok {
+			r.elems[1] = builtinCollect(it)
+		}
+		queue = append(queue, r.elems[1].(*ArrayValue).elems...)
+	}
+	return v
 }
 
 func builtinContainsAny(cs *ArrayValue, it Value) Value {
