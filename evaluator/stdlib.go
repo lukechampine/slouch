@@ -495,6 +495,17 @@ func builtinNot(b *BoolValue) *BoolValue {
 }
 
 func builtinDot(l, r Value) Value {
+	if it, ok := r.(*IteratorValue); ok {
+		r = builtinCollect(it)
+	}
+	if r, ok := r.(*ArrayValue); ok {
+		e := builtinDot(l, r.elems[len(r.elems)-1])
+		if r := makeArray(r.elems[:len(r.elems)-1]); len(r.elems) > 0 {
+			return builtinDot(e, r)
+		}
+		return e
+	}
+
 	switch l := l.(type) {
 	case *ArrayValue:
 		switch r := r.(type) {
@@ -519,7 +530,11 @@ func builtinDot(l, r Value) Value {
 			for n := r.i; n > 0; n-- {
 				l.next()
 			}
-			return l.next()
+			v := l.next()
+			if v == nil {
+				// TODO: maybe return false?
+				panic("exhausted iterator")
+			}
 		}
 	}
 	panic(fmt.Sprintf("unhandled type combination %T . %T", l, r))
@@ -1349,30 +1364,67 @@ func builtinSet(env *Environment, key, val, in Value) Value {
 		}
 		return val
 	}
+	if it, ok := key.(*IteratorValue); ok {
+		key = builtinCollect(it)
+	}
+
 	switch in := in.(type) {
 	case *ArrayValue:
 		in = internalClone(in).(*ArrayValue)
-		i := key.(*IntegerValue).i
-		in.elems[i] = set(in.elems[i])
+		switch key := key.(type) {
+		case *IntegerValue:
+			in.elems[key.i] = set(in.elems[key.i])
+		case *ArrayValue:
+			i := key.elems[len(key.elems)-1].(*IntegerValue).i
+			key = makeArray(key.elems[:len(key.elems)-1])
+			if len(key.elems) == 0 {
+				in.elems[i] = set(in.elems[i])
+			} else {
+				in.elems[i] = builtinSet(env, key, val, in.elems[i])
+			}
+		default:
+			panic(fmt.Sprintf("set: unhandled key type %T", key))
+		}
 		return in
 	case *MapValue:
 		in = internalClone(in).(*MapValue)
 		in.set(key, set(in.get(key)))
 		return in
 	case *IteratorValue:
-		i := key.(*IntegerValue).i
-		return &IteratorValue{
-			next: func() Value {
-				v := in.next()
-				if v == nil {
-					return nil
-				}
-				if i == 0 {
-					return set(v)
-				}
-				i--
-				return v
-			},
+		switch key := key.(type) {
+		case *IntegerValue:
+			i := key.i + 1
+			return &IteratorValue{
+				next: func() Value {
+					v := in.next()
+					if v == nil {
+						return nil
+					} else if i--; i == 0 {
+						return set(v)
+					}
+					return v
+				},
+			}
+		case *ArrayValue:
+			i := key.elems[len(key.elems)-1].(*IntegerValue).i + 1
+			key = makeArray(key.elems[:len(key.elems)-1])
+			return &IteratorValue{
+				next: func() Value {
+					v := in.next()
+					if v == nil {
+						return nil
+					} else if i--; i == 0 {
+						if len(key.elems) > 0 {
+							return builtinSet(env, key, val, v)
+						}
+						return set(v)
+					}
+					return v
+				},
+			}
+
+		default:
+			panic(fmt.Sprintf("set: unhandled key type %T", key))
 		}
 	default:
 		panic(fmt.Sprintf("set: invalid collection type %T", in))
