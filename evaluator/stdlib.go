@@ -493,8 +493,21 @@ func builtinOr(l, r Value) *BoolValue {
 	return makeBool(internalTruthy(l) || internalTruthy(r))
 }
 
-func builtinNot(b *BoolValue) *BoolValue {
-	return makeBool(!b.b)
+func builtinNot(env *Environment, b Value) Value {
+	switch b := b.(type) {
+	case *BoolValue:
+		return makeBool(!b.b)
+	case *PartialValue:
+		return env.apply(&BuiltinValue{
+			name:  "notpartial",
+			nargs: env.apply(b).(*PartialValue).need(),
+			fn: func(env *Environment, args []Value) Value {
+				return makeBool(!env.apply(b, args...).(*BoolValue).b)
+			},
+		})
+	default:
+		panic(fmt.Sprintf("not: invalid type %T", b))
+	}
 }
 
 func builtinDot(l, r Value) Value {

@@ -117,8 +117,10 @@ func (env *Environment) Eval(e ast.Expr) Value {
 		var l, r Value
 		if e.Left != nil {
 			l = env.Eval(e.Left)
-			// short circuit and/or
-			if _, lpartial := l.(*PartialValue); !lpartial {
+			// short circuit and/or, if possible
+			switch l.(type) {
+			case *BuiltinValue, *PartialValue, HoleValue:
+			default:
 				if e.Token.Kind == token.And && !internalTruthy(l) {
 					return makeBool(false)
 				} else if e.Token.Kind == token.Or && internalTruthy(l) {
@@ -156,8 +158,10 @@ func (env *Environment) Eval(e ast.Expr) Value {
 						l, args = args[0], args[1:]
 					}
 
-					// short circuit and/or
-					if _, lpartial := l.(*PartialValue); !lpartial {
+					// short circuit and/or, if possible
+					switch l.(type) {
+					case *BuiltinValue, *PartialValue, HoleValue:
+					default:
 						if e.Token.Kind == token.And && !internalTruthy(l) {
 							return makeBool(false)
 						} else if e.Token.Kind == token.Or && internalTruthy(l) {
@@ -221,11 +225,11 @@ func (env *Environment) Eval(e ast.Expr) Value {
 			}
 			args := make([]Value, nargs)
 			for i := range args {
-				args[i] = v
+				args[i] = internalClone(v)
 			}
 			return env.apply(fn, args...)
 		})
-		return makePartial(rfn, make([]Value, 1))
+		return env.apply(rfn)
 	case ast.Negative:
 		return internalNegate(env.Eval(e.Value))
 	case ast.Pipe:
