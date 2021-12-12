@@ -1903,7 +1903,7 @@ func builtinEnum(start, end Value) *IteratorValue {
 		n--
 		return &IteratorValue{
 			next: func() Value {
-				if n >= end.(*IntegerValue).i {
+				if n+1 >= end.(*IntegerValue).i {
 					return nil
 				}
 				n++
@@ -1918,10 +1918,10 @@ func builtinEnum(start, end Value) *IteratorValue {
 		n0--
 		return &IteratorValue{
 			next: func() Value {
-				if n0 >= e0 && n1 >= e1 {
+				if n0+1 >= e0 && n1+1 >= e1 {
 					return nil
 				}
-				if n0++; n0 > e0 {
+				if n0++; n0 >= e0 {
 					n0 = 0
 					n1++
 				}
