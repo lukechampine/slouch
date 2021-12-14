@@ -1,6 +1,7 @@
 package evaluator
 
 import (
+	"bytes"
 	"fmt"
 	"reflect"
 	"regexp"
@@ -66,6 +67,8 @@ var builtins = [...]*BuiltinValue{
 	makeBuiltin("fromBase", builtinFromBase),
 	makeBuiltin("toBase", builtinToBase),
 	makeBuiltin("filter", builtinFilter),
+	makeBuiltin("reject", builtinReject),
+	makeBuiltin("cleave", builtinCleave),
 	makeBuiltin("first", builtinFirst),
 	makeBuiltin("firstRepeat", builtinFirstRepeat),
 	makeBuiltin("flatten", builtinFlatten),
@@ -98,6 +101,7 @@ var builtins = [...]*BuiltinValue{
 	makeBuiltin("memo", builtinMemo),
 	makeBuiltin("move", builtinMove),
 	makeBuiltin("draw", builtinDraw),
+	makeBuiltin("render", builtinRender),
 	makeBuiltin("min", builtinMin),
 	makeBuiltin("minBy", builtinMinBy),
 	makeBuiltin("minIndex", builtinMinIndex),
@@ -866,6 +870,18 @@ func builtinFilter(env *Environment, fn Value, it *IteratorValue) *IteratorValue
 			return v
 		},
 	}
+}
+
+func builtinReject(env *Environment, fn Value, it *IteratorValue) *IteratorValue {
+	return builtinFilter(env, builtinNot(env, fn), it)
+}
+
+func builtinCleave(env *Environment, fn Value, it *IteratorValue) *ArrayValue {
+	a := builtinCollect(it)
+	return makeArray([]Value{
+		builtinFilter(env, fn, internalArrayIterator(a)),
+		builtinReject(env, fn, internalArrayIterator(a)),
+	})
 }
 
 func builtinRuns(it *IteratorValue) *IteratorValue {
@@ -2103,15 +2119,15 @@ func builtinDFS(env *Environment, fn Value, acc Value, start Value) Value {
 }
 
 func builtinFlood(env *Environment, fn Value, p *ArrayValue) *ArrayValue {
-	seen := make(map[string]bool)
+	seen := make(map[valueHash]bool)
 	var visited []Value
 	queue := []*ArrayValue{p}
 	for len(queue) > 0 {
 		p, queue = queue[0], queue[1:]
-		if seen[p.String()] {
+		if seen[p.hash()] {
 			continue
 		}
-		seen[p.String()] = true
+		seen[p.hash()] = true
 		visited = append(visited, p)
 		for _, a := range builtinAdj(p).elems {
 			if internalTruthy(env.apply(fn, a)) {
@@ -2253,6 +2269,42 @@ func builtinDraw(pos, dest *ArrayValue) *IteratorValue {
 			return pos
 		},
 	}
+}
+
+func builtinRender(set, unset *StringValue, pixels *ArrayValue) *StringValue {
+	getPx := func(i int) (int64, int64) {
+		px := pixels.elems[i].(*ArrayValue)
+		return px.elems[0].(*IntegerValue).i, px.elems[1].(*IntegerValue).i
+	}
+	// determine bounds
+	minX, minY := getPx(0)
+	maxX, maxY := getPx(0)
+	for i := 0; i < len(pixels.elems); i++ {
+		px, py := getPx(i)
+		if px < minX {
+			minX = px
+		}
+		if px > maxX {
+			maxX = px
+		}
+		if py < minY {
+			minY = py
+		}
+		if py > maxY {
+			maxY = py
+		}
+	}
+	offX, offY := -minX, -minY
+
+	lines := make([][]byte, maxY-minY+1)
+	for i := range lines {
+		lines[i] = bytes.Repeat([]byte(unset.s), int(maxX-minX)+1)
+	}
+	for i := 0; i < len(pixels.elems); i++ {
+		px, py := getPx(i)
+		lines[py+offY][px+offX] = set.s[0]
+	}
+	return makeString(string(bytes.Join(lines, []byte("\n"))))
 }
 
 func builtinMax(it *IteratorValue) Value {
@@ -2399,6 +2451,9 @@ func builtinMemo(env *Environment, fn Value) *BuiltinValue {
 		name:  "memo",
 		nargs: env.apply(fn).(*PartialValue).need(),
 		fn: func(env *Environment, args []Value) Value {
+			for i := range args {
+				args[i] = internalClone(args[i])
+			}
 			if v := m.get(makeArray(args)); v != nil {
 				return v
 			}
