@@ -90,6 +90,7 @@ func main() {
 
 		var input, solution string
 		var day, year, part int
+		var unquote bool
 		eval := evaluator.New()
 		prompt, err := readline.New("slouch> ")
 		if err != nil {
@@ -117,7 +118,7 @@ func main() {
 
 			if !strings.HasPrefix(line, ":") {
 				prev.mu.Lock()
-				solution, err = executeOne(eval, input, line)
+				solution, err = executeOne(eval, input, line, unquote)
 				prev.mu.Unlock()
 				if err != nil {
 					log("Error:", err)
@@ -143,6 +144,14 @@ func main() {
 				eval = evaluator.New()
 				prev.eval = eval
 
+			case ":setquote":
+				unquote = false
+				log("Unquote mode on: string values will be escaped before display")
+
+			case ":setunquote":
+				unquote = true
+				log("Unquote mode on: string values will be displayed raw")
+
 			case ":setday":
 				day, _ = strconv.Atoi(args[1])
 				year, _ = strconv.Atoi(args[2])
@@ -163,9 +172,10 @@ func main() {
 					log("Couldn't load program:", err)
 					break
 				}
-				if err := execute(eval, input, string(prog), prompt.Terminal); err != nil {
+				if err := execute(eval, input, string(prog), prompt.Terminal, unquote); err != nil {
 					log("Error:", err)
 				}
+
 			case ":submit":
 				if solution == "" {
 					solution = args[1]
@@ -195,14 +205,21 @@ func main() {
 	}
 	p := parser.Parse(lexer.Tokenize(prog))
 	start := time.Now()
-	err = evaluator.New().Run(p, input, func(v evaluator.Value) { fmt.Println(v) })
+	err = evaluator.New().Run(p, input, func(v evaluator.Value) {
+		if s, ok := v.(*evaluator.StringValue); ok {
+			raw, _ := strconv.Unquote(s.String()) // hack
+			fmt.Println(raw)
+		} else {
+			fmt.Println(v)
+		}
+	})
 	if err != nil {
 		panic(err)
 	}
 	fmt.Println("\nFinished in", time.Since(start))
 }
 
-func execute(eval *evaluator.Environment, input, prog string, w io.Writer) (err error) {
+func execute(eval *evaluator.Environment, input, prog string, w io.Writer, unquote bool) (err error) {
 	func() {
 		defer func() {
 			if r := recover(); r != nil {
@@ -211,15 +228,20 @@ func execute(eval *evaluator.Environment, input, prog string, w io.Writer) (err 
 		}()
 		p := parser.Parse(lexer.Tokenize(prog))
 		err = eval.Run(p, input, func(v evaluator.Value) {
-			fmt.Fprintln(w, "\r"+v.String())
+			if s, ok := v.(*evaluator.StringValue); ok && unquote {
+				raw, _ := strconv.Unquote(s.String())
+				fmt.Fprintln(w, "\r"+raw)
+			} else {
+				fmt.Fprintln(w, "\r"+v.String())
+			}
 		})
 	}()
 	return
 }
 
-func executeOne(eval *evaluator.Environment, input, prog string) (output string, err error) {
+func executeOne(eval *evaluator.Environment, input, prog string, unquote bool) (output string, err error) {
 	var buf bytes.Buffer
-	err = execute(eval, input, prog, &buf)
+	err = execute(eval, input, prog, &buf, unquote)
 	output = strings.TrimSpace(buf.String())
 	return
 }
@@ -273,7 +295,7 @@ func (p *evalPreview) OnChange(line []rune, pos int, key rune) (newLine []rune, 
 
 	prog := strings.TrimRight(string(line), "| ")
 	if prog != p.lastProg {
-		output, err := executeOne(p.eval.Clone(), p.input, prog)
+		output, err := executeOne(p.eval.Clone(), p.input, prog, false)
 		if err != nil {
 			if !strings.HasSuffix(string(line), " ") && strings.Contains(err.Error(), "identifier") {
 				return
