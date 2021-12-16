@@ -2,6 +2,7 @@ package evaluator
 
 import (
 	"bytes"
+	"container/heap"
 	"fmt"
 	"reflect"
 	"regexp"
@@ -40,6 +41,7 @@ var builtins = [...]*BuiltinValue{
 	makeBuiltin("append", builtinAppend),
 	makeBuiltin("apply", builtinApply),
 	makeBuiltin("assoc", builtinAssoc),
+	makeBuiltin("assocWith", builtinAssocWith),
 	makeBuiltin("caesar", builtinCaesar),
 	makeBuiltin("chars", builtinChars),
 	makeBuiltin("choose", builtinChoose),
@@ -48,6 +50,7 @@ var builtins = [...]*BuiltinValue{
 	makeBuiltin("contains", builtinContains),
 	makeBuiltin("containsAny", builtinContainsAny),
 	makeBuiltin("dims", builtinDims),
+	makeBuiltin("dijkstra", builtinDijkstra),
 	makeBuiltin("dfs", builtinDFS),
 	makeBuiltin("flood", builtinFlood),
 	makeBuiltin("exhaust", builtinExhaust),
@@ -460,7 +463,7 @@ func builtinMod(l, r Value) Value {
 			return makeInteger(l.i % r.i)
 		}
 	}
-	panic(fmt.Sprintf("unhandled type combination %T % %T", l, r))
+	panic(fmt.Sprintf("unhandled type combination %T %% %T", l, r))
 }
 
 func builtinEquals(l, r Value) *BoolValue {
@@ -557,6 +560,7 @@ func builtinDot(l, r Value) Value {
 				// TODO: maybe return false?
 				panic("exhausted iterator")
 			}
+			return v
 		}
 	}
 	panic(fmt.Sprintf("unhandled type combination %T . %T", l, r))
@@ -1487,9 +1491,9 @@ func builtinIterate(env *Environment, fn Value, v Value) *IteratorValue {
 	return &IteratorValue{
 		next: func() Value {
 			if !first {
-				v = internalClone(v)
 				v = env.apply1(fn, v)
 			}
+			v = internalClone(v)
 			first = false
 			return v
 		},
@@ -2005,6 +2009,23 @@ func builtinAssoc(it *IteratorValue) *MapValue {
 	return m
 }
 
+func builtinAssocWith(env *Environment, fn Value, it *IteratorValue) *MapValue {
+	m := makeMap()
+	for {
+		k, v := it.next(), it.next()
+		if k == nil {
+			break
+		} else if v == nil {
+			panic("assoc: dangling key")
+		}
+		if old := m.get(k); old != nil {
+			v = env.apply(fn, old, v)
+		}
+		m.set(k, v)
+	}
+	return m
+}
+
 func builtinInvert(m *MapValue) *MapValue {
 	im := makeMap()
 	for i := range m.vals {
@@ -2099,6 +2120,53 @@ func builtinDims(v Value) *ArrayValue {
 		// TODO
 		return builtinDims(builtinCollect(v))
 	}
+}
+
+type dijkstraEntry struct {
+	path []Value
+	cost int64
+}
+
+type dijkstraQueue []dijkstraEntry
+
+func (dq dijkstraQueue) Len() int           { return len(dq) }
+func (dq dijkstraQueue) Less(i, j int) bool { return dq[i].cost < dq[j].cost }
+func (dq dijkstraQueue) Swap(i, j int)      { dq[i], dq[j] = dq[j], dq[i] }
+
+func (dq *dijkstraQueue) Push(x interface{}) {
+	*dq = append(*dq, x.(dijkstraEntry))
+}
+
+func (dq *dijkstraQueue) Pop() interface{} {
+	old := *dq
+	*dq = old[:len(old)-1]
+	return old[len(old)-1]
+}
+
+func builtinDijkstra(env *Environment, neighborsFn Value, start, end Value) *ArrayValue {
+	end = internalClone(end)
+	seen := make(map[valueHash]bool)
+	queue := dijkstraQueue{{[]Value{start}, 0}}
+	for len(queue) > 0 {
+		p := heap.Pop(&queue).(dijkstraEntry)
+		node := p.path[len(p.path)-1]
+		if seen[node.hash()] {
+			continue
+		} else if internalEquals(node, end) {
+			return makeArray(p.path)
+		}
+		ns := env.apply(neighborsFn, node)
+		it := internalToIterator(ns)
+		for v := it.next(); v != nil; v = it.next() {
+			n, cost := v.(*ArrayValue).elems[0], v.(*ArrayValue).elems[1].(*IntegerValue).i
+			if seen[n.hash()] {
+				continue
+			}
+			heap.Push(&queue, dijkstraEntry{append(p.path[:len(p.path):len(p.path)], n), p.cost + cost})
+		}
+		seen[node.hash()] = true
+	}
+	panic("dijkstra: no path found")
 }
 
 func builtinDFS(env *Environment, fn Value, acc Value, start Value) Value {
