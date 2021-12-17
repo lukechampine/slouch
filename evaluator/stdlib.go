@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"container/heap"
 	"fmt"
+	"math/big"
 	"reflect"
 	"regexp"
 	"sort"
@@ -77,6 +78,7 @@ var builtinsList = [...]*BuiltinValue{
 	makeBuiltin("fromDigits", builtinFromDigits),
 	makeBuiltin("fromBase", builtinFromBase),
 	makeBuiltin("toBase", builtinToBase),
+	makeBuiltin("rebase", builtinRebase),
 	makeBuiltin("filter", builtinFilter),
 	makeBuiltin("reject", builtinReject),
 	makeBuiltin("cleave", builtinCleave),
@@ -132,6 +134,7 @@ var builtinsList = [...]*BuiltinValue{
 	makeBuiltin("same", builtinSame),
 	makeBuiltin("scan", builtinScan),
 	makeBuiltin("set", builtinSet),
+	makeBuiltin("sign", builtinSign),
 	makeBuiltin("sort", builtinSort),
 	makeBuiltin("sortBy", builtinSortBy),
 	makeBuiltin("sorted", builtinSorted),
@@ -400,7 +403,35 @@ func internalEquals(l, r Value) bool {
 	panic(fmt.Sprintf("unhandled type combination %T == %T", l, r))
 }
 
+func internalHasIterator(v Value) bool {
+	switch v := v.(type) {
+	case *IteratorValue:
+		return true
+	case *ArrayValue:
+		for _, elem := range v.elems {
+			if internalHasIterator(elem) {
+				return true
+			}
+		}
+	case *MapValue:
+		for _, elem := range v.keys {
+			if internalHasIterator(elem) {
+				return true
+			}
+		}
+		for _, elem := range v.vals {
+			if internalHasIterator(elem) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func internalClone(v Value) Value {
+	if !internalHasIterator(v) {
+		return v
+	}
 	switch v := v.(type) {
 	case *IteratorValue:
 		a := builtinCollect(v)
@@ -873,8 +904,12 @@ func builtinTakeWhile(env *Environment, fn Value, it *IteratorValue) *IteratorVa
 	done := false
 	return &IteratorValue{
 		next: func() Value {
+			if done {
+				return nil
+			}
 			v := it.next()
-			if done || v == nil {
+			if v == nil {
+				done = true
 				return nil
 			}
 			c := internalClone(v)
@@ -882,7 +917,7 @@ func builtinTakeWhile(env *Environment, fn Value, it *IteratorValue) *IteratorVa
 				done = true
 				return nil
 			}
-			return v
+			return c
 		},
 	}
 }
@@ -919,7 +954,7 @@ func builtinFilter(env *Environment, fn Value, it *IteratorValue) *IteratorValue
 			if !internalTruthy(env.apply1(fn, c)) {
 				goto again
 			}
-			return v
+			return c
 		},
 	}
 }
@@ -929,11 +964,20 @@ func builtinReject(env *Environment, fn Value, it *IteratorValue) *IteratorValue
 }
 
 func builtinCleave(env *Environment, fn Value, it *IteratorValue) *ArrayValue {
-	a := builtinCollect(it)
-	return makeArray([]Value{
-		builtinFilter(env, fn, internalArrayIterator(a)),
-		builtinReject(env, fn, internalArrayIterator(a)),
-	})
+	switch fn := fn.(type) {
+	case *IntegerValue:
+		return makeArray([]Value{
+			builtinTake(fn, it),
+			it,
+		})
+	case *PartialValue, *BuiltinValue:
+		a := builtinCollect(it)
+		return makeArray([]Value{
+			builtinFilter(env, fn, internalArrayIterator(a)),
+			builtinReject(env, fn, internalArrayIterator(a)),
+		})
+	}
+	panic("cleave: invalid separator")
 }
 
 func builtinRuns(it *IteratorValue) *IteratorValue {
@@ -1453,6 +1497,17 @@ func builtinScan(env *Environment, fn Value, it *IteratorValue) *IteratorValue {
 	}
 }
 
+func builtinSign(i *IntegerValue) *IntegerValue {
+	switch {
+	case i.i < 0:
+		return makeInteger(-1)
+	case i.i == 0:
+		return makeInteger(0)
+	default:
+		return makeInteger(1)
+	}
+}
+
 func builtinSet(env *Environment, key, val, in Value) Value {
 	set := func(prev Value) Value {
 		if fn, ok := val.(*PartialValue); ok {
@@ -1932,11 +1987,24 @@ func builtinAdj8(pos *ArrayValue) *ArrayValue {
 }
 
 func builtinWithin(dims *ArrayValue, pos *ArrayValue) *BoolValue {
-	dx := dims.elems[0].(*IntegerValue).i
-	dy := dims.elems[1].(*IntegerValue).i
+	var minX, minY, maxX, maxY int64
+	switch len(dims.elems) {
+	case 2:
+		minX, minY = 0, 0
+		maxX = dims.elems[0].(*IntegerValue).i
+		maxY = dims.elems[1].(*IntegerValue).i
+	case 4:
+		minX = dims.elems[0].(*IntegerValue).i
+		minY = dims.elems[1].(*IntegerValue).i
+		maxX = dims.elems[2].(*IntegerValue).i
+		maxY = dims.elems[3].(*IntegerValue).i
+	default:
+		panic("within: invalid dimensions")
+	}
+
 	px := pos.elems[0].(*IntegerValue).i
 	py := pos.elems[1].(*IntegerValue).i
-	return makeBool(0 <= px && px < dx && 0 <= py && py < dy)
+	return makeBool(minX <= px && px < maxX && minY <= py && py < maxY)
 }
 
 func builtinAll(env *Environment, fn Value, it *IteratorValue) *BoolValue {
@@ -2005,6 +2073,14 @@ func builtinFromBase(base *IntegerValue, s *StringValue) *IntegerValue {
 
 func builtinToBase(base *IntegerValue, i *IntegerValue) *StringValue {
 	return makeString(strconv.FormatInt(i.i, int(base.i)))
+}
+
+func builtinRebase(from *IntegerValue, to *IntegerValue, s *StringValue) *StringValue {
+	i := new(big.Int)
+	if _, ok := i.SetString(s.s, int(from.i)); !ok {
+		panic("rebase: invalid argument(s)")
+	}
+	return makeString(i.Text(int(to.i)))
 }
 
 func builtinEnum(start, end Value) *IteratorValue {
