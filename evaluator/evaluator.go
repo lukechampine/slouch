@@ -184,6 +184,60 @@ func (env *Environment) Eval(e ast.Expr) Value {
 		// otherwise, just evaluate immediately
 		return env.apply(infixFns[e.Op], l, r)
 	case ast.FnCall:
+		if id, ok := e.Fn.(ast.Ident); ok && id.Name == "match" {
+			if len(e.Args) < 1 {
+				panic("match: missing pattern(s)")
+			}
+			patterns := e.Args[0].(ast.Array).Elems
+			if len(patterns)%2 != 0 {
+				panic("match: missing expression for pattern")
+			}
+			evaled := make([]Value, len(patterns))
+			getEvaled := func(i int) Value {
+				if evaled[i] == nil {
+					evaled[i] = env.Eval(patterns[i])
+				}
+				return evaled[i]
+			}
+			fn := &BuiltinValue{
+				name:  "match",
+				nargs: 1,
+				fn: func(env *Environment, args []Value) Value {
+					v := internalClone(args[0])
+					for i := 0; i < len(patterns); i += 2 {
+						var isMatch bool
+						switch c := getEvaled(i).(type) {
+						case HoleValue:
+							isMatch = true
+						case *PartialValue:
+							if c.need() != 1 {
+								panic("match: function patterns must be 1-adic")
+							}
+							isMatch = func() (b bool) {
+								defer func() {
+									b = b && recover() == nil
+								}()
+								bv, ok := env.apply(c, v).(*BoolValue)
+								return ok && bv.b
+							}()
+						default:
+							isMatch = internalComparable(c, v) && internalEquals(c, v)
+						}
+						if isMatch {
+							return getEvaled(i + 1)
+						}
+					}
+					panic("match: non-exhaustive pattern")
+				},
+			}
+			e.Args = e.Args[1:]
+			args := make([]Value, len(e.Args))
+			for i, a := range e.Args {
+				args[i] = env.Eval(a)
+			}
+			return env.apply(fn, args...)
+		}
+
 		fn := env.Eval(e.Fn)
 		args := make([]Value, len(e.Args))
 		for i, a := range e.Args {

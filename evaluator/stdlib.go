@@ -309,6 +309,46 @@ func internalNegate(v Value) Value {
 	panic(fmt.Sprintf("cannot negate %T", v))
 }
 
+func internalComparable(l, r Value) (ok bool) {
+	if it, ok := l.(*IteratorValue); ok {
+		if it.infinite {
+			return false
+		}
+		l = builtinCollect(it)
+	}
+	if it, ok := r.(*IteratorValue); ok {
+		if it.infinite {
+			return false
+		}
+		r = builtinCollect(it)
+	}
+
+	switch l := l.(type) {
+	case *IntegerValue:
+		_, ok = r.(*IntegerValue)
+	case *BoolValue:
+		_, ok = r.(*BoolValue)
+	case *StringValue:
+		switch r := r.(type) {
+		case *StringValue:
+			ok = true
+		case *ArrayValue:
+			_, ok = builtinConcat(internalArrayIterator(r)).(*StringValue)
+		}
+	case *ArrayValue:
+		switch r := r.(type) {
+		case *StringValue:
+			_, ok = builtinConcat(internalArrayIterator(l)).(*StringValue)
+		case *ArrayValue:
+			ok = len(l.elems) == len(r.elems)
+			for i := 0; ok && i < len(l.elems); i++ {
+				ok = ok && internalComparable(l.elems[i], r.elems[i])
+			}
+		}
+	}
+	return
+}
+
 func internalEquals(l, r Value) bool {
 	if a, ok := l.(*ArrayValue); ok {
 		l = internalArrayIterator(a)
