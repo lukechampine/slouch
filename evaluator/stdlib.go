@@ -31,7 +31,15 @@ var infixFns = map[token.Kind]*BuiltinValue{
 	token.Dot:           makeBuiltin(".", builtinDot),
 }
 
-var builtins = [...]*BuiltinValue{
+var builtins = func() map[string]*BuiltinValue {
+	m := make(map[string]*BuiltinValue)
+	for _, b := range builtinsList {
+		m[b.name] = b
+	}
+	return m
+}()
+
+var builtinsList = [...]*BuiltinValue{
 	makeBuiltin("abs", builtinAbs),
 	makeBuiltin("adj", builtinAdj),
 	makeBuiltin("adj8", builtinAdj8),

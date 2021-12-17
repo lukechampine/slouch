@@ -111,6 +111,8 @@ func (env *Environment) Eval(e ast.Expr) Value {
 				return env.apply(bv)
 			}
 			return v
+		} else if bv, ok := builtins[e.Name]; ok {
+			return env.apply(bv)
 		}
 		panic(fmt.Sprintf("unknown identifier %q", e.Name))
 	case ast.InfixOp:
@@ -418,9 +420,6 @@ func New() *Environment {
 		}
 	}
 	idents := make(map[string]Value, len(builtins))
-	for _, b := range builtins {
-		idents[b.name] = b
-	}
 	return &Environment{
 		gointerp: i,
 		idents:   idents,
