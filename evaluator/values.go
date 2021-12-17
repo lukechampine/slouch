@@ -6,6 +6,16 @@ import (
 	"strings"
 )
 
+var intTab = func() []IntegerValue {
+	tab := make([]IntegerValue, 65536)
+	for i := range tab {
+		tab[i] = IntegerValue{int64(i - 32768)}
+	}
+	return tab
+}()
+
+var boolTab = []BoolValue{{false}, {true}}
+
 type valueHash string
 
 type Value interface {
@@ -20,7 +30,12 @@ type IntegerValue struct {
 func (iv *IntegerValue) hash() valueHash { return valueHash("Integer:" + iv.String()) }
 func (iv *IntegerValue) String() string  { return strconv.FormatInt(iv.i, 10) }
 
-func makeInteger(i int64) *IntegerValue { return &IntegerValue{i: i} }
+func makeInteger(i int64) *IntegerValue {
+	if i+32768 < int64(len(intTab)) {
+		return &intTab[i+32768]
+	}
+	return &IntegerValue{i: i}
+}
 
 type StringValue struct {
 	s string
@@ -38,7 +53,12 @@ type BoolValue struct {
 func (bv *BoolValue) hash() valueHash { return valueHash("Bool:" + bv.String()) }
 func (bv *BoolValue) String() string  { return strconv.FormatBool(bv.b) }
 
-func makeBool(b bool) *BoolValue { return &BoolValue{b: b} }
+func makeBool(b bool) *BoolValue {
+	if b {
+		return &boolTab[1]
+	}
+	return &boolTab[0]
+}
 
 type HoleValue struct{}
 
