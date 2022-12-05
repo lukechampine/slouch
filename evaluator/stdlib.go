@@ -52,8 +52,10 @@ var builtinsList = [...]*BuiltinValue{
 	makeBuiltin("assoc", builtinAssoc),
 	makeBuiltin("assocWith", builtinAssocWith),
 	makeBuiltin("caesar", builtinCaesar),
+	makeBuiltin("char", builtinChar),
 	makeBuiltin("chars", builtinChars),
 	makeBuiltin("choose", builtinChoose),
+	makeBuiltin("chooseWithRep", builtinChooseWithRep),
 	makeBuiltin("collect", builtinCollect),
 	makeBuiltin("concat", builtinConcat),
 	makeBuiltin("contains", builtinContains),
@@ -64,6 +66,7 @@ var builtinsList = [...]*BuiltinValue{
 	makeBuiltin("flood", builtinFlood),
 	makeBuiltin("exhaust", builtinExhaust),
 	makeBuiltin("in", builtinIn),
+	makeBuiltin("combos", builtinCombos),
 	makeBuiltin("count", builtinCount),
 	makeBuiltin("cycle", builtinCycle),
 	makeBuiltin("delete", builtinDelete),
@@ -75,6 +78,7 @@ var builtinsList = [...]*BuiltinValue{
 	makeBuiltin("dropWhile", builtinDropWhile),
 	makeBuiltin("dups", builtinDups),
 	makeBuiltin("enum", builtinEnum),
+	makeBuiltin("flip", builtinFlip),
 	makeBuiltin("fromDigits", builtinFromDigits),
 	makeBuiltin("fromBase", builtinFromBase),
 	makeBuiltin("toBase", builtinToBase),
@@ -108,6 +112,7 @@ var builtinsList = [...]*BuiltinValue{
 	makeBuiltin("lines", builtinLines),
 	makeBuiltin("map", builtinMap),
 	makeBuiltin("concatmap", builtinConcatmap),
+	makeBuiltin("mapTo", builtinMapTo),
 	makeBuiltin("max", builtinMax),
 	makeBuiltin("maxBy", builtinMaxBy),
 	makeBuiltin("maxIndex", builtinMaxIndex),
@@ -133,6 +138,7 @@ var builtinsList = [...]*BuiltinValue{
 	makeBuiltin("runs", builtinRuns),
 	makeBuiltin("same", builtinSame),
 	makeBuiltin("scan", builtinScan),
+	makeBuiltin("scan1", builtinScan1),
 	makeBuiltin("set", builtinSet),
 	makeBuiltin("sign", builtinSign),
 	makeBuiltin("sort", builtinSort),
@@ -143,12 +149,14 @@ var builtinsList = [...]*BuiltinValue{
 	makeBuiltin("stabilize", builtinStabilize),
 	makeBuiltin("string", builtinString),
 	makeBuiltin("sum", builtinSum),
+	makeBuiltin("sumBy", builtinSumBy),
 	makeBuiltin("tail", builtinTail),
 	makeBuiltin("tails", builtinTails),
 	makeBuiltin("take", builtinTake),
 	makeBuiltin("takeWhile", builtinTakeWhile),
 	makeBuiltin("toUpper", builtinToUpper),
 	makeBuiltin("transpose", builtinTranspose),
+	makeBuiltin("type", builtinType),
 	makeBuiltin("uniq", builtinUniq),
 	makeBuiltin("uniqBy", builtinUniqBy),
 	makeBuiltin("vals", builtinVals),
@@ -429,9 +437,6 @@ func internalHasIterator(v Value) bool {
 }
 
 func internalClone(v Value) Value {
-	if !internalHasIterator(v) {
-		return v
-	}
 	switch v := v.(type) {
 	case *IteratorValue:
 		a := builtinCollect(v)
@@ -652,7 +657,7 @@ func builtinSplit(split Value, it Value) Value {
 
 	switch it := it.(type) {
 	case *StringValue:
-		groups := strings.Split(strings.TrimSpace(it.s), split.(*StringValue).s)
+		groups := strings.Split(it.s, split.(*StringValue).s)
 		elems := make([]Value, len(groups))
 		for i := range elems {
 			elems[i] = makeString(groups[i])
@@ -707,6 +712,10 @@ func builtinWords(s *StringValue) *ArrayValue {
 		elems[i] = makeString(words[i])
 	}
 	return makeArray(elems)
+}
+
+func builtinChar(s *StringValue) *IntegerValue {
+	return makeInteger(int64(s.s[0] - 'A'))
 }
 
 func builtinChars(s *StringValue) *ArrayValue {
@@ -846,10 +855,19 @@ func builtinTails(it *IteratorValue) Value {
 	}
 }
 
-func builtinIndex(c Value, it *IteratorValue) Value {
+func builtinIndex(env *Environment, fn Value, it *IteratorValue) *IntegerValue {
+	pred := func(v Value) bool {
+		switch fn := fn.(type) {
+		case *PartialValue, *BuiltinValue:
+			return env.apply(fn, v).(*BoolValue).b
+		default:
+			return internalEquals(fn, v)
+		}
+	}
+
 	var i int64
 	for v := it.next(); v != nil; v = it.next() {
-		if internalEquals(c, v) {
+		if pred(v) {
 			return makeInteger(i)
 		}
 		i++
@@ -857,8 +875,8 @@ func builtinIndex(c Value, it *IteratorValue) Value {
 	panic("index: no matches")
 }
 
-func builtinIndexIn(it *IteratorValue, c Value) Value {
-	return builtinIndex(c, it)
+func builtinIndexIn(env *Environment, it *IteratorValue, fn Value) Value {
+	return builtinIndex(env, fn, it)
 }
 
 func builtinInits(it *IteratorValue) Value {
@@ -880,24 +898,54 @@ func builtinToUpper(s *StringValue) *StringValue {
 	return makeString(strings.ToUpper(s.s))
 }
 
-func builtinTake(n *IntegerValue, it *IteratorValue) *IteratorValue {
-	rem := n.i
-	return &IteratorValue{
-		next: func() Value {
-			if rem <= 0 {
-				return nil
-			}
-			rem--
-			return it.next()
-		},
+func builtinTake(n *IntegerValue, it Value) Value {
+	switch it := it.(type) {
+	case *StringValue:
+		i := int(n.i)
+		if i >= len(it.s) {
+			i = len(it.s)
+		} else if i < 0 {
+			i = len(it.s) + i
+		}
+		return makeString(it.s[:i])
+	case *ArrayValue:
+		i := int(n.i)
+		if i >= len(it.elems) {
+			i = len(it.elems)
+		} else if i < 0 {
+			i = len(it.elems) + i
+		}
+		return makeArray(it.elems[:i])
+	case *IteratorValue:
+		rem := n.i
+		return &IteratorValue{
+			next: func() Value {
+				if rem <= 0 {
+					return nil
+				}
+				rem--
+				return it.next()
+			},
+		}
+	default:
+		panic("take: unhandled type")
 	}
 }
 
-func builtinDrop(n *IntegerValue, it *IteratorValue) *IteratorValue {
-	for rem := n.i; rem > 0; rem-- {
-		it.next()
+func builtinDrop(n *IntegerValue, it Value) Value {
+	switch it := it.(type) {
+	case *StringValue:
+		return makeString(it.s[n.i:])
+	case *ArrayValue:
+		return makeArray(it.elems[n.i:])
+	case *IteratorValue:
+		for rem := n.i; rem > 0; rem-- {
+			it.next()
+		}
+		return it
+	default:
+		panic("drop: unhandled type")
 	}
-	return it
 }
 
 func builtinTakeWhile(env *Environment, fn Value, it *IteratorValue) *IteratorValue {
@@ -1076,12 +1124,13 @@ func builtinPartition(n *IntegerValue, it Value) Value {
 	case *IteratorValue:
 		return &IteratorValue{
 			next: func() Value {
-				a := builtinCollect(builtinTake(n, it))
+				a := builtinCollect(builtinTake(n, it).(*IteratorValue))
 				if len(a.elems) == 0 {
 					return nil
 				}
 				return a
 			},
+			infinite: it.infinite,
 		}
 	default:
 		panic(fmt.Sprintf("cannot partition %T", it))
@@ -1116,6 +1165,34 @@ func builtinChoose(n *IntegerValue, a *ArrayValue) *IteratorValue {
 		return makeArray(elems)
 	}
 	return &IteratorValue{next: next}
+}
+
+func builtinChooseWithRep(n *IntegerValue, a *ArrayValue) *IteratorValue {
+	pn := make([]int, n.i)
+	p := make([]Value, n.i)
+	done := false
+	return &IteratorValue{
+		next: func() Value {
+			if done {
+				return nil
+			}
+			for i, x := range pn {
+				p[i] = a.elems[x]
+			}
+			for i := int64(0); ; {
+				pn[i]++
+				if pn[i] < len(a.elems) {
+					break
+				}
+				pn[i] = 0
+				if i++; i == n.i {
+					done = true
+					break
+				}
+			}
+			return internalClone(makeArray(p))
+		},
+	}
 }
 
 func builtinPerms(a *ArrayValue) *IteratorValue {
@@ -1220,12 +1297,20 @@ func builtinRotate(n *IntegerValue, v Value) Value {
 	}
 	switch v := v.(type) {
 	case *ArrayValue:
+		i := n.i % int64(len(v.elems))
+		if i < 0 {
+			i += int64(len(v.elems))
+		}
 		elems := make([]Value, 0, len(v.elems))
-		elems = append(elems, v.elems[n.i:]...)
-		elems = append(elems, v.elems[:n.i]...)
+		elems = append(elems, v.elems[i:]...)
+		elems = append(elems, v.elems[:i]...)
 		return makeArray(elems)
 	case *StringValue:
-		return makeString(v.s[n.i:] + v.s[:n.i])
+		i := n.i % int64(len(v.s))
+		if i < 0 {
+			i += int64(len(v.s))
+		}
+		return makeString(v.s[i:] + v.s[:i])
 	default:
 		panic(fmt.Sprintf("cannot rotate %T", v))
 	}
@@ -1377,6 +1462,39 @@ func builtinConcatmap(env *Environment, fn Value, it *IteratorValue) *IteratorVa
 	}
 }
 
+func builtinMapTo(env *Environment, to Value, it *IteratorValue) *MapValue {
+	switch to := to.(type) {
+	case *ArrayValue:
+		return builtinMapTo(env, internalArrayIterator(to), it)
+	case *IteratorValue:
+		m := makeMap()
+		for {
+			k, v := it.next(), to.next()
+			if k == nil {
+				break
+			} else if v == nil {
+				break
+			}
+			m.set(k, v)
+		}
+		return m
+	case *BuiltinValue:
+		return builtinMapTo(env, env.apply(to), it)
+	case *PartialValue:
+		m := makeMap()
+		for {
+			k := it.next()
+			if k == nil {
+				break
+			}
+			m.set(k, env.apply(to, k))
+		}
+		return m
+	default:
+		panic(fmt.Sprintf("mapTo: unhandled type %T", to))
+	}
+}
+
 func builtinSum(it *IteratorValue) Value {
 	sum := it.next()
 	if sum == nil {
@@ -1384,6 +1502,18 @@ func builtinSum(it *IteratorValue) Value {
 	}
 	for v := it.next(); v != nil; v = it.next() {
 		sum = builtinAdd(sum, v)
+	}
+	return sum
+}
+
+func builtinSumBy(env *Environment, fn Value, it *IteratorValue) Value {
+	sum := it.next()
+	if sum == nil {
+		return makeInteger(0)
+	}
+	sum = env.apply(fn, sum)
+	for v := it.next(); v != nil; v = it.next() {
+		sum = builtinAdd(sum, env.apply(fn, v))
 	}
 	return sum
 }
@@ -1480,21 +1610,26 @@ func builtinFold1(env *Environment, fn Value, it *IteratorValue) Value {
 	return builtinFold(env, fn, acc, it)
 }
 
-func builtinScan(env *Environment, fn Value, it *IteratorValue) *IteratorValue {
-	var acc Value
+func builtinScan(env *Environment, fn Value, acc Value, it *IteratorValue) *IteratorValue {
 	return &IteratorValue{
 		next: func() Value {
-			if v := it.next(); v == nil {
+			v := it.next()
+			if v == nil {
 				return nil
-			} else if acc == nil {
-				acc = v
-			} else {
-				acc = env.apply(fn, acc, v)
 			}
+			acc = internalClone(env.apply(fn, acc, v))
 			return acc
 		},
 		infinite: it.infinite,
 	}
+}
+
+func builtinScan1(env *Environment, fn Value, it *IteratorValue) *IteratorValue {
+	acc := it.next()
+	if acc == nil {
+		panic("scan1: empty iterator")
+	}
+	return builtinScan(env, fn, acc, it)
 }
 
 func builtinSign(i *IntegerValue) *IntegerValue {
@@ -1680,6 +1815,12 @@ func builtinConcat(it *IteratorValue) Value {
 
 func builtinAppend(v Value, it Value) Value {
 	switch it := it.(type) {
+	case *StringValue:
+		vs, ok := v.(*StringValue)
+		if !ok {
+			panic(fmt.Sprintf("cannot append %T to %T", it, v))
+		}
+		return makeString(it.s + vs.s)
 	case *ArrayValue:
 		elems := make([]Value, 0, len(it.elems)+1)
 		elems = append(elems, it.elems...)
@@ -1703,6 +1844,12 @@ func builtinAppend(v Value, it Value) Value {
 
 func builtinPrepend(v Value, it Value) Value {
 	switch it := it.(type) {
+	case *StringValue:
+		vs, ok := v.(*StringValue)
+		if !ok {
+			panic(fmt.Sprintf("cannot prepend %T to %T", v, it))
+		}
+		return makeString(vs.s + it.s)
 	case *ArrayValue:
 		elems := make([]Value, 0, len(it.elems)+1)
 		elems = append(elems, v)
@@ -1756,7 +1903,9 @@ func builtinDelete(d Value, it Value) Value {
 	}
 }
 
-func builtinDeleteAll(ds *ArrayValue, it Value) Value {
+func builtinDeleteAll(di *IteratorValue, it Value) Value {
+	ds := builtinCollect(di)
+
 	switch it := it.(type) {
 	case *StringValue:
 		pairs := make([]string, len(ds.elems)*2)
@@ -1796,6 +1945,35 @@ func builtinDeleteAll(ds *ArrayValue, it Value) Value {
 		}
 	default:
 		panic(fmt.Sprintf("cannot delete from %T", it))
+	}
+}
+
+func builtinType(v Value) *StringValue {
+	switch v.(type) {
+	case *IntegerValue:
+		return makeString("integer")
+	case *StringValue:
+		return makeString("string")
+	case *BoolValue:
+		return makeString("bool")
+	case *HoleValue:
+		return makeString("hole")
+	case *ArrayValue:
+		return makeString("array")
+	case *MapValue:
+		return makeString("map")
+	case *IteratorValue:
+		return makeString("iterator")
+	case *PartialValue:
+		return makeString("partial")
+	case *BuiltinValue:
+		return makeString("builtin")
+	case *GoValue:
+		return makeString("go")
+	case *FuncValue:
+		return makeString("func")
+	default:
+		panic(fmt.Sprintf("unknown type %T", v))
 	}
 }
 
@@ -1902,20 +2080,21 @@ func builtinDiff(a, b *IteratorValue) *IteratorValue {
 	}
 }
 
-func builtinSame(a, b *IteratorValue) *IteratorValue {
-	return &IteratorValue{
-		next: func() Value {
-		again:
-			av, bv := a.next(), b.next()
-			if av == nil || bv == nil {
-				return nil
-			} else if !internalEquals(av, bv) {
-				goto again
-			}
-			return av
-		},
-		infinite: a.infinite,
+func builtinSame(a, b *IteratorValue) *ArrayValue {
+	aa := builtinCollect(a)
+	ba := builtinCollect(b)
+	bm := make(map[valueHash]bool)
+	for _, v := range ba.elems {
+		bm[v.hash()] = true
 	}
+	var s []Value
+	for _, v := range aa.elems {
+		if h := v.hash(); bm[h] {
+			delete(bm, h)
+			s = append(s, v)
+		}
+	}
+	return makeArray(s)
 }
 
 func builtinZip(a, b *IteratorValue) *IteratorValue {
@@ -2047,6 +2226,20 @@ func builtinIota() *IteratorValue {
 	}
 }
 
+func builtinFlip(env *Environment, fn Value) *BuiltinValue {
+	return &BuiltinValue{
+		name:  "flip",
+		nargs: env.apply(fn).(*PartialValue).need(),
+		fn: func(env *Environment, args []Value) Value {
+			for i := 0; i < len(args)/2; i++ {
+				j := len(args) - i - 1
+				args[i], args[j] = args[j], args[i]
+			}
+			return env.apply(fn, args...)
+		},
+	}
+}
+
 func builtinFromDigits(it *IteratorValue) *IntegerValue {
 	var b []byte
 	for v := it.next(); v != nil; v = it.next() {
@@ -2081,6 +2274,36 @@ func builtinRebase(from *IntegerValue, to *IntegerValue, s *StringValue) *String
 		panic("rebase: invalid argument(s)")
 	}
 	return makeString(i.Text(int(to.i)))
+}
+
+func builtinCombos(a *ArrayValue) *IteratorValue {
+	vs := make([]*ArrayValue, len(a.elems))
+	for i := range vs {
+		vs[i] = builtinCollect(internalToIterator(a.elems[i]))
+	}
+	is := make([]int, len(a.elems))
+	done := false
+	return &IteratorValue{
+		next: func() Value {
+			if done {
+				return nil
+			}
+			c := make([]Value, len(a.elems))
+			for i := range c {
+				c[i] = vs[i].elems[is[i]]
+			}
+			for i := len(is) - 1; i >= 0; i-- {
+				is[i]++
+				if is[i] < len(vs[i].elems) {
+					return makeArray(c)
+				}
+				is[i] = 0
+			}
+			// exhausted
+			done = true
+			return makeArray(c)
+		},
+	}
 }
 
 func builtinEnum(start, end Value) *IteratorValue {
@@ -2122,13 +2345,17 @@ func builtinEnum(start, end Value) *IteratorValue {
 func builtinAssoc(it *IteratorValue) *MapValue {
 	m := makeMap()
 	for {
-		k, v := it.next(), it.next()
-		if k == nil {
+		v := it.next()
+		if v == nil {
 			break
-		} else if v == nil {
-			panic("assoc: dangling key")
+		} else if v, ok := v.(*ArrayValue); ok {
+			if len(v.elems) != 2 {
+				panic("assoc: invalid argument")
+			}
+			m.set(v.elems[0], v.elems[1])
+		} else {
+			panic("assoc: invalid argument")
 		}
-		m.set(k, v)
 	}
 	return m
 }
@@ -2405,9 +2632,8 @@ func builtinHasPrefix(p Value, it *IteratorValue) *BoolValue {
 func builtinHistogram(it *IteratorValue) *MapValue {
 	m := makeMap()
 	for v := it.next(); v != nil; v = it.next() {
-		n := m.getOr(v, makeInteger(0)).(*IntegerValue)
-		n.i++
-		m.set(v, n)
+		n := m.getOr(v, makeInteger(0))
+		m.set(v, builtinAdd(n, makeInteger(1)))
 	}
 	return m
 }

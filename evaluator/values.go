@@ -31,7 +31,7 @@ func (iv *IntegerValue) hash() valueHash { return valueHash("Integer:" + iv.Stri
 func (iv *IntegerValue) String() string  { return strconv.FormatInt(iv.i, 10) }
 
 func makeInteger(i int64) *IntegerValue {
-	if i+32768 < int64(len(intTab)) {
+	if 0 <= i+32768 && i+32768 < int64(len(intTab)) {
 		return &intTab[i+32768]
 	}
 	return &IntegerValue{i: i}

@@ -53,6 +53,10 @@ func (env *Environment) Clone() *Environment {
 	return env.newScope()
 }
 
+func (env *Environment) Bind(name string, value Value) {
+	env.idents[name] = value
+}
+
 func (env *Environment) Run(p ast.Program, input string, output func(Value)) error {
 	if _, ok := env.idents["input"]; !ok {
 		env.idents["input"] = makeString(input)

@@ -14,75 +14,12 @@ import (
 	"time"
 
 	"github.com/chzyer/readline"
+	"github.com/pkg/profile"
+	"lukechampine.com/slouch/ast"
 	"lukechampine.com/slouch/evaluator"
 	"lukechampine.com/slouch/lexer"
 	"lukechampine.com/slouch/parser"
 )
-
-/*
-
-	BUGS:
-	- [ ] "iterator aliasing"
-			=iot take _ iota
-			[(iot 3), (iot 4), (iot 2)]
-		* should return [[0, 1, 2], [0, 1, 2, 3], [0, 1]], instead returns [[0, 1, 2], [3, 4, 5, 6], [7, 8]]
-			=iot take _ iota
-			[(iot 3), (iot 4), (iot 2)] | first (len == 4)
-		* should return [0, 1, 2, 3], instead returns []
-		* in the general case, this requires analyzing the full program ahead of time...
-		* for now, just make (deep!) copies everywhere
-		* also need to duplicate iterator in partial fn args
-		*
-		* "garbage collection" -- use ref counts, and .clone when multiple refs exist
-			* probably need to add .clone field to iterator
-
-	PERF:
-	- [ ] special case []int64 and []string for arrays (or iterators?)
-	- [ ] track iterator size, for O(1) len and more efficient collect
-		* not possible for e.g. iota | takeWhile (<10)
-	- [ ] panic(fmt.Sprintf("%T", v)) causes v to escape
-	- [ ] refcount all values; reuse memory if 0
-	- [ ] memoization rune or builtin
-		* e.g. memo (last x) only computes (last x) once
-
-	TODO:
-	- [x] proper test framework
-	- [x] start tracking how many AoC problems have (complete, working, idiomatic, performant) solutions
-	- [ ] cleanup Builtin/Partial distinction; should just have one FuncValue type
-	- [ ] reconsider automatically converting strings to iterator
-		* chars builtin is probably less surprising
-	- [ ] make _ work in arrays
-	- [ ] vscode/lsp
-		* make a language server that handles highlighting, autocomplete, etc.
-			* but also, onchange, re-run and send results to a "webview" extension
-
-	IDEAS:
-	- [ ] make "truthy" explicit, never implicit
-	- [ ] assign to global within expr
-		e.g. first -<(d=(diff) | len == 1) | delete d
-	- [/] paste problem description into AI; spits out possibly-relevant functions
-		* probably better to have human-directed keyword search (e.g. "circular" spits out cycle)
-	- [ ] time.Parse-style API for directions: parsedirs "U1 D2 L3 R4", parsedirs "N:1 S:2 W:3 E:4"
-
-2017 day 14
-2018 day 15
-2018 day 23
-2019 day 18
-2020 day 20
-
-*/
-
-// terminal niceties:
-// - [x] readline (particularly history)
-// - [x] display result as you type, one line below
-//       * truncate as necessary
-// - [ ] colors
-// - [ ] tab completion
-// - [ ] timeout
-// - [ ] store result of each repl entry in r1, r2, etc.
-// - [ ] key bindings:
-//	   - [ ] ctrl-s: save current result to variable
-//	   - [ ] ctrl-l: drop into sub-evaluator where input is the first element of the current result; esc appends current prog to old cursor
 
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "repl" {
@@ -143,6 +80,14 @@ func main() {
 				prev.input = input
 				eval = evaluator.New()
 				prev.eval = eval
+
+			case ":load":
+				data, err := ioutil.ReadFile(args[2])
+				if err != nil {
+					log("Couldn't load file:", err)
+					break
+				}
+				eval.Bind(args[1], eval.Eval(ast.String{Value: string(data)}))
 
 			case ":setquote":
 				unquote = false
@@ -373,7 +318,7 @@ func extractMain(resp string) string {
 
 func readFile(filename string) (string, error) {
 	bytes, err := ioutil.ReadFile(filename)
-	return strings.TrimSpace(string(bytes)), err
+	return strings.TrimRight(string(bytes), " \t\n"), err
 }
 
 func fetchInput(day, year int) (string, error) {
