@@ -77,9 +77,17 @@ type ArrayValue struct {
 func (av *ArrayValue) hash() valueHash { return internalToIterator(av).hash() }
 func (av *ArrayValue) String() string {
 	{
+		var unarray func(Value) Value
+		unarray = func(v Value) Value {
+			if av, ok := v.(*ArrayValue); ok && len(av.elems) == 1 {
+				return unarray(av.elems[0])
+			}
+			return v
+		}
+
 		var sb strings.Builder
 		for i, e := range av.elems {
-			sv, ok := e.(*StringValue)
+			sv, ok := unarray(e).(*StringValue)
 			if !ok || len(sv.s) != 1 {
 				break
 			}

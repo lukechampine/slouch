@@ -11,6 +11,9 @@ import (
 	"strconv"
 	"strings"
 
+	"lukechampine.com/slouch/ast"
+	"lukechampine.com/slouch/lexer"
+	"lukechampine.com/slouch/parser"
 	"lukechampine.com/slouch/token"
 )
 
@@ -78,6 +81,7 @@ var builtinsList = [...]*BuiltinValue{
 	makeBuiltin("dropWhile", builtinDropWhile),
 	makeBuiltin("dups", builtinDups),
 	makeBuiltin("enum", builtinEnum),
+	makeBuiltin("eval", builtinEval),
 	makeBuiltin("flip", builtinFlip),
 	makeBuiltin("fromDigits", builtinFromDigits),
 	makeBuiltin("fromBase", builtinFromBase),
@@ -110,6 +114,7 @@ var builtinsList = [...]*BuiltinValue{
 	makeBuiltin("last", builtinLast),
 	makeBuiltin("len", builtinLen),
 	makeBuiltin("lines", builtinLines),
+	makeBuiltin("groups", builtinGroups),
 	makeBuiltin("map", builtinMap),
 	makeBuiltin("concatmap", builtinConcatmap),
 	makeBuiltin("mapTo", builtinMapTo),
@@ -118,6 +123,7 @@ var builtinsList = [...]*BuiltinValue{
 	makeBuiltin("maxIndex", builtinMaxIndex),
 	makeBuiltin("memo", builtinMemo),
 	makeBuiltin("move", builtinMove),
+	makeBuiltin("moveTo", builtinMoveTo),
 	makeBuiltin("draw", builtinDraw),
 	makeBuiltin("render", builtinRender),
 	makeBuiltin("min", builtinMin),
@@ -133,6 +139,7 @@ var builtinsList = [...]*BuiltinValue{
 	makeBuiltin("product", builtinProduct),
 	makeBuiltin("regex", builtinRegex),
 	makeBuiltin("repeat", builtinRepeat),
+	makeBuiltin("replicate", builtinReplicate),
 	makeBuiltin("reverse", builtinReverse),
 	makeBuiltin("rotate", builtinRotate),
 	makeBuiltin("runs", builtinRuns),
@@ -155,6 +162,9 @@ var builtinsList = [...]*BuiltinValue{
 	makeBuiltin("take", builtinTake),
 	makeBuiltin("takeWhile", builtinTakeWhile),
 	makeBuiltin("toUpper", builtinToUpper),
+	makeBuiltin("toLower", builtinToLower),
+	makeBuiltin("toSet", builtinToSet),
+	makeBuiltin("tr", builtinTr),
 	makeBuiltin("transpose", builtinTranspose),
 	makeBuiltin("type", builtinType),
 	makeBuiltin("uniq", builtinUniq),
@@ -705,6 +715,14 @@ func builtinLines(s *StringValue) Value {
 	return builtinSplit(makeString("\n"), s)
 }
 
+func builtinGroups(s *StringValue) Value {
+	var groups []Value
+	for _, g := range strings.Split(s.s, "\n\n") {
+		groups = append(groups, builtinLines(makeString(g)))
+	}
+	return makeArray(groups)
+}
+
 func builtinWords(s *StringValue) *ArrayValue {
 	words := strings.Fields(strings.TrimSpace(s.s))
 	elems := make([]Value, len(words))
@@ -715,7 +733,7 @@ func builtinWords(s *StringValue) *ArrayValue {
 }
 
 func builtinChar(s *StringValue) *IntegerValue {
-	return makeInteger(int64(s.s[0] - 'A'))
+	return makeInteger(int64(s.s[0]))
 }
 
 func builtinChars(s *StringValue) *ArrayValue {
@@ -896,6 +914,18 @@ func builtinInits(it *IteratorValue) Value {
 
 func builtinToUpper(s *StringValue) *StringValue {
 	return makeString(strings.ToUpper(s.s))
+}
+
+func builtinToLower(s *StringValue) *StringValue {
+	return makeString(strings.ToLower(s.s))
+}
+
+func builtinToSet(it *IteratorValue) *MapValue {
+	m := makeMap()
+	for v := it.next(); v != nil; v = it.next() {
+		m.set(v, makeBool(true))
+	}
+	return m
 }
 
 func builtinTake(n *IntegerValue, it Value) Value {
@@ -1258,6 +1288,19 @@ func builtinReverse(v Value) Value {
 		return makeString(string(rev))
 	default:
 		panic(fmt.Sprintf("cannot reverse %T", v))
+	}
+}
+
+func builtinTr(m *MapValue, it *IteratorValue) *IteratorValue {
+	return &IteratorValue{
+		next: func() Value {
+			v := it.next()
+			if v == nil {
+				return nil
+			}
+			return m.getOr(v, v)
+		},
+		infinite: it.infinite,
 	}
 }
 
@@ -2132,7 +2175,7 @@ func builtinAny(env *Environment, fn Value, it *IteratorValue) *BoolValue {
 	return makeBool(false)
 }
 
-func builtinAbs(env *Environment, v *IntegerValue) *IntegerValue {
+func builtinAbs(v *IntegerValue) *IntegerValue {
 	if v.i < 0 {
 		return makeInteger(-v.i)
 	}
@@ -2140,14 +2183,15 @@ func builtinAbs(env *Environment, v *IntegerValue) *IntegerValue {
 }
 
 func builtinAdj(pos *ArrayValue) *ArrayValue {
-	px := pos.elems[0].(*IntegerValue).i
-	py := pos.elems[1].(*IntegerValue).i
-	return makeArray([]Value{
-		makeArray([]Value{makeInteger(px - 1), makeInteger(py + 0)}),
-		makeArray([]Value{makeInteger(px + 0), makeInteger(py - 1)}),
-		makeArray([]Value{makeInteger(px + 0), makeInteger(py + 1)}),
-		makeArray([]Value{makeInteger(px + 1), makeInteger(py + 0)}),
-	})
+	var adj []Value
+	for i := range pos.elems {
+		p := makeArray(append([]Value(nil), pos.elems...))
+		p.elems[i] = builtinAdd(p.elems[i], makeInteger(1))
+		m := makeArray(append([]Value(nil), pos.elems...))
+		m.elems[i] = builtinSub(m.elems[i], makeInteger(1))
+		adj = append(adj, p, m)
+	}
+	return makeArray(adj)
 }
 
 func builtinAdj8(pos *ArrayValue) *ArrayValue {
@@ -2166,24 +2210,27 @@ func builtinAdj8(pos *ArrayValue) *ArrayValue {
 }
 
 func builtinWithin(dims *ArrayValue, pos *ArrayValue) *BoolValue {
-	var minX, minY, maxX, maxY int64
-	switch len(dims.elems) {
-	case 2:
-		minX, minY = 0, 0
-		maxX = dims.elems[0].(*IntegerValue).i
-		maxY = dims.elems[1].(*IntegerValue).i
-	case 4:
-		minX = dims.elems[0].(*IntegerValue).i
-		minY = dims.elems[1].(*IntegerValue).i
-		maxX = dims.elems[2].(*IntegerValue).i
-		maxY = dims.elems[3].(*IntegerValue).i
-	default:
-		panic("within: invalid dimensions")
+	if dl, ok := dims.elems[0].(*ArrayValue); ok {
+		du := dims.elems[1].(*ArrayValue)
+		for i := range pos.elems {
+			p := pos.elems[i].(*IntegerValue).i
+			l := dl.elems[i].(*IntegerValue).i
+			u := du.elems[i].(*IntegerValue).i
+			if p < l || u < p {
+				return makeBool(false)
+			}
+		}
+		return makeBool(true)
+	} else {
+		for i := range pos.elems {
+			p := pos.elems[i].(*IntegerValue).i
+			d := dims.elems[i].(*IntegerValue).i
+			if p < 0 || d < p {
+				return makeBool(false)
+			}
+		}
+		return makeBool(true)
 	}
-
-	px := pos.elems[0].(*IntegerValue).i
-	py := pos.elems[1].(*IntegerValue).i
-	return makeBool(minX <= px && px < maxX && minY <= py && py < maxY)
 }
 
 func builtinAll(env *Environment, fn Value, it *IteratorValue) *BoolValue {
@@ -2209,6 +2256,10 @@ func builtinRepeat(v Value) *IteratorValue {
 		next:     func() Value { return v },
 		infinite: true,
 	}
+}
+
+func builtinReplicate(n *IntegerValue, v Value) *IteratorValue {
+	return builtinTake(n, builtinRepeat(v)).(*IteratorValue)
 }
 
 func builtinAlpha() *StringValue {
@@ -2340,6 +2391,20 @@ func builtinEnum(start, end Value) *IteratorValue {
 		}
 	}
 	panic("enum: invalid arguments")
+}
+
+var globalEval func(e ast.Expr) Value // gross hack, but so is eval
+
+func builtinEval(env *Environment, s *StringValue) Value {
+	p := parser.Parse(lexer.Tokenize(s.s))
+	if len(p.Stmts) != 1 {
+		panic("eval: invalid argument")
+	}
+	e, ok := p.Stmts[0].(ast.ExprStmt)
+	if !ok {
+		panic("eval: invalid argument")
+	}
+	return globalEval(e.X)
 }
 
 func builtinAssoc(it *IteratorValue) *MapValue {
@@ -2641,13 +2706,13 @@ func builtinHistogram(it *IteratorValue) *MapValue {
 func builtinMove(cmd *ArrayValue, pos *ArrayValue) *ArrayValue {
 	pos = internalClone(pos).(*ArrayValue)
 	switch cmd.elems[0].(*StringValue).s {
-	case "u":
+	case "u", "U", "n", "N":
 		pos.elems[1] = builtinAdd(pos.elems[1], cmd.elems[1])
-	case "d":
+	case "d", "D", "s", "S":
 		pos.elems[1] = builtinSub(pos.elems[1], cmd.elems[1])
-	case "l":
+	case "l", "L", "w", "W":
 		pos.elems[0] = builtinSub(pos.elems[0], cmd.elems[1])
-	case "r":
+	case "r", "R", "e", "E":
 		pos.elems[0] = builtinAdd(pos.elems[0], cmd.elems[1])
 	default:
 		panic("move: invalid direction")
@@ -2655,9 +2720,42 @@ func builtinMove(cmd *ArrayValue, pos *ArrayValue) *ArrayValue {
 	return pos
 }
 
+// cheating
+func builtinMoveTo(dst *ArrayValue, src *ArrayValue) *ArrayValue {
+	dstX := dst.elems[0].(*IntegerValue).i
+	dstY := dst.elems[1].(*IntegerValue).i
+	srcX := src.elems[0].(*IntegerValue).i
+	srcY := src.elems[1].(*IntegerValue).i
+	abs := func(i int64) int64 {
+		if i < 0 {
+			return -i
+		}
+		return i
+	}
+	signum := func(i int64) int64 {
+		if i < 0 {
+			return -1
+		} else if i > 0 {
+			return 1
+		}
+		return 0
+	}
+	if abs(dstX-srcX) < 2 && abs(dstY-srcY) < 2 {
+		return src
+	}
+	return makeArray([]Value{
+		makeInteger(srcX + signum(dstX-srcX)),
+		makeInteger(srcY + signum(dstY-srcY)),
+	})
+}
+
 func builtinDraw(pos, dest *ArrayValue) *IteratorValue {
 	dx := dest.elems[0].(*IntegerValue).i - pos.elems[0].(*IntegerValue).i
 	dy := dest.elems[1].(*IntegerValue).i - pos.elems[1].(*IntegerValue).i
+	if dx == 0 && dy == 0 {
+		return internalToIterator(makeArray([]Value{pos}))
+	}
+
 	// gcd
 	a, b := dx, dy
 	if a < 0 {

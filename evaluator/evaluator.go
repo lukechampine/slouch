@@ -58,6 +58,7 @@ func (env *Environment) Bind(name string, value Value) {
 }
 
 func (env *Environment) Run(p ast.Program, input string, output func(Value)) error {
+	globalEval = env.Eval // gross hack, but so is eval
 	if _, ok := env.idents["input"]; !ok {
 		env.idents["input"] = makeString(input)
 	}
@@ -369,7 +370,7 @@ func (env *Environment) Eval(e ast.Expr) Value {
 					}
 					a := makeArray(elems)
 					if e.Assoc {
-						return builtinAssoc(internalArrayIterator(a))
+						return builtinAssoc(internalToIterator(builtinPartition(makeInteger(2), a)))
 					}
 					return a
 				},
@@ -377,7 +378,7 @@ func (env *Environment) Eval(e ast.Expr) Value {
 		}
 		a := makeArray(elems)
 		if e.Assoc {
-			return builtinAssoc(internalArrayIterator(a))
+			return builtinAssoc(internalToIterator(builtinPartition(makeInteger(2), a)))
 		}
 		return a
 	default:
