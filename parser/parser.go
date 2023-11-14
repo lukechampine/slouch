@@ -24,8 +24,8 @@ const (
 	precCmp
 	precSum
 	precProd
-	precNegative
 	precCall
+	precNegative
 	precSplat
 	precDot
 )
@@ -235,7 +235,7 @@ func (p *Parser) parseExpr(prec int) ast.Expr {
 	// TODO: can't shake the feeling that this is buggy...
 	if prec < precCall {
 		var args []ast.Expr
-		for p.peekIs(token.Hole, token.Ident, token.Int, token.String, token.Lbrace, token.Lparen, token.Lbracket, token.Splat, token.Rep) {
+		for p.peekIs(token.Hole, token.Ident, token.Int, token.String, token.Lbrace, token.Lparen, token.Lbracket, token.Negative, token.Splat, token.Rep) {
 			p.advance()
 			args = append(args, p.parseExpr(precCall))
 		}

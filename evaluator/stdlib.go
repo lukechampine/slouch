@@ -2107,20 +2107,20 @@ func builtinDeltas(it *IteratorValue) *IteratorValue {
 	}
 }
 
-func builtinDiff(a, b *IteratorValue) *IteratorValue {
-	return &IteratorValue{
-		next: func() Value {
-		again:
-			av, bv := a.next(), b.next()
-			if av == nil {
-				return nil
-			} else if bv != nil && internalEquals(av, bv) {
-				goto again
-			}
-			return av
-		},
-		infinite: a.infinite,
+func builtinDiff(a, b *IteratorValue) *ArrayValue {
+	aa := builtinCollect(a)
+	ba := builtinCollect(b)
+	bm := make(map[valueHash]bool)
+	for _, v := range ba.elems {
+		bm[v.hash()] = true
 	}
+	var s []Value
+	for _, v := range aa.elems {
+		if !bm[v.hash()] {
+			s = append(s, v)
+		}
+	}
+	return makeArray(s)
 }
 
 func builtinSame(a, b *IteratorValue) *ArrayValue {
