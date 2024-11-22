@@ -118,6 +118,33 @@ func (env *Environment) Eval(e ast.Expr) Value {
 			return v
 		} else if bv, ok := builtins[e.Name]; ok {
 			return env.apply(bv)
+		} else if strings.HasSuffix(e.Name, "With") {
+			id := ast.Ident{Name: strings.TrimSuffix(e.Name, "With")}
+			if env.idents[id.Name] != nil || builtins[id.Name] != nil {
+				// modify the function to take an extra argument (a function)
+				// and map that function onto the original function's last
+				// argument, e.g. sumWith fn xs = sum (map fn xs)
+				fn := env.Eval(id)
+				var nargs int
+				switch fn := fn.(type) {
+				case *BuiltinValue:
+					nargs = fn.nargs
+				case *PartialValue:
+					nargs = fn.need()
+				default:
+					panic(fmt.Sprintf("With expected function, got %T", fn))
+				}
+				wfn := &BuiltinValue{
+					name:  e.Name,
+					nargs: nargs + 1,
+					fn: func(env *Environment, args []Value) Value {
+						newArgs := append([]Value(nil), args[1:len(args)-1]...)
+						newArgs = append(newArgs, builtinMap(env, args[0], internalToIterator(args[len(args)-1])))
+						return env.apply(fn, newArgs...)
+					},
+				}
+				return env.apply(wfn)
+			}
 		}
 		panic(fmt.Sprintf("unknown identifier %q", e.Name))
 	case ast.InfixOp:

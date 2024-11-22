@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"container/heap"
 	"fmt"
+	"math"
 	"math/big"
 	"reflect"
 	"regexp"
@@ -52,6 +53,7 @@ var builtinsList = [...]*BuiltinValue{
 	makeBuiltin("any", builtinAny),
 	makeBuiltin("append", builtinAppend),
 	makeBuiltin("apply", builtinApply),
+	makeBuiltin("ascii", builtinASCII),
 	makeBuiltin("assoc", builtinAssoc),
 	makeBuiltin("assocWith", builtinAssocWith),
 	makeBuiltin("caesar", builtinCaesar),
@@ -59,48 +61,51 @@ var builtinsList = [...]*BuiltinValue{
 	makeBuiltin("chars", builtinChars),
 	makeBuiltin("choose", builtinChoose),
 	makeBuiltin("chooseWithRep", builtinChooseWithRep),
+	makeBuiltin("cleave", builtinCleave),
+	makeBuiltin("cleaves", builtinCleaves),
 	makeBuiltin("collect", builtinCollect),
+	makeBuiltin("combos", builtinCombos),
 	makeBuiltin("concat", builtinConcat),
+	makeBuiltin("concatmap", builtinConcatmap),
 	makeBuiltin("contains", builtinContains),
 	makeBuiltin("containsAny", builtinContainsAny),
-	makeBuiltin("dims", builtinDims),
-	makeBuiltin("dijkstra", builtinDijkstra),
-	makeBuiltin("dfs", builtinDFS),
-	makeBuiltin("flood", builtinFlood),
-	makeBuiltin("exhaust", builtinExhaust),
-	makeBuiltin("in", builtinIn),
-	makeBuiltin("combos", builtinCombos),
 	makeBuiltin("count", builtinCount),
 	makeBuiltin("cycle", builtinCycle),
 	makeBuiltin("delete", builtinDelete),
 	makeBuiltin("deleteAll", builtinDeleteAll),
 	makeBuiltin("deltas", builtinDeltas),
+	makeBuiltin("dfs", builtinDFS),
 	makeBuiltin("diff", builtinDiff),
 	makeBuiltin("digits", builtinDigits),
+	makeBuiltin("dijkstra", builtinDijkstra),
+	makeBuiltin("dims", builtinDims),
+	makeBuiltin("draw", builtinDraw),
 	makeBuiltin("drop", builtinDrop),
 	makeBuiltin("dropWhile", builtinDropWhile),
 	makeBuiltin("dups", builtinDups),
 	makeBuiltin("enum", builtinEnum),
 	makeBuiltin("eval", builtinEval),
-	makeBuiltin("flip", builtinFlip),
-	makeBuiltin("fromDigits", builtinFromDigits),
-	makeBuiltin("fromBase", builtinFromBase),
-	makeBuiltin("toBase", builtinToBase),
-	makeBuiltin("rebase", builtinRebase),
+	makeBuiltin("exhaust", builtinExhaust),
 	makeBuiltin("filter", builtinFilter),
-	makeBuiltin("reject", builtinReject),
-	makeBuiltin("cleave", builtinCleave),
 	makeBuiltin("first", builtinFirst),
+	makeBuiltin("firstIndex", builtinFirstIndex),
 	makeBuiltin("firstRepeat", builtinFirstRepeat),
 	makeBuiltin("flatten", builtinFlatten),
+	makeBuiltin("flip", builtinFlip),
+	makeBuiltin("flood", builtinFlood),
 	makeBuiltin("fold", builtinFold),
 	makeBuiltin("fold1", builtinFold1),
+	makeBuiltin("fromBase", builtinFromBase),
+	makeBuiltin("fromDigits", builtinFromDigits),
+	makeBuiltin("gcd", builtinGCD),
 	makeBuiltin("graph", builtinGraph),
+	makeBuiltin("groups", builtinGroups),
 	makeBuiltin("hasKey", builtinHasKey),
 	makeBuiltin("hasPrefix", builtinHasPrefix),
 	makeBuiltin("hasVal", builtinHasVal),
 	makeBuiltin("head", builtinHead),
 	makeBuiltin("histogram", builtinHistogram),
+	makeBuiltin("in", builtinIn),
 	makeBuiltin("index", builtinIndex),
 	makeBuiltin("indexIn", builtinIndexIn),
 	makeBuiltin("inits", builtinInits),
@@ -112,32 +117,36 @@ var builtinsList = [...]*BuiltinValue{
 	makeBuiltin("join", builtinJoin),
 	makeBuiltin("keys", builtinKeys),
 	makeBuiltin("last", builtinLast),
+	makeBuiltin("lcm", builtinLCM),
 	makeBuiltin("len", builtinLen),
 	makeBuiltin("lines", builtinLines),
-	makeBuiltin("groups", builtinGroups),
 	makeBuiltin("map", builtinMap),
-	makeBuiltin("concatmap", builtinConcatmap),
 	makeBuiltin("mapTo", builtinMapTo),
 	makeBuiltin("max", builtinMax),
 	makeBuiltin("maxBy", builtinMaxBy),
 	makeBuiltin("maxIndex", builtinMaxIndex),
+	makeBuiltin("mean", builtinMean),
+	makeBuiltin("median", builtinMedian),
 	makeBuiltin("memo", builtinMemo),
-	makeBuiltin("move", builtinMove),
-	makeBuiltin("moveTo", builtinMoveTo),
-	makeBuiltin("draw", builtinDraw),
-	makeBuiltin("render", builtinRender),
 	makeBuiltin("min", builtinMin),
 	makeBuiltin("minBy", builtinMinBy),
 	makeBuiltin("minIndex", builtinMinIndex),
-	makeBuiltin("mean", builtinMean),
-	makeBuiltin("median", builtinMedian),
+	makeBuiltin("area", builtinArea),
+	makeBuiltin("move", builtinMove),
+	makeBuiltin("moveTo", builtinMoveTo),
 	makeBuiltin("none", builtinNone),
 	makeBuiltin("not", builtinNot),
+	makeBuiltin("numeric", builtinNumeric),
+	makeBuiltin("pairs", builtinPairs),
 	makeBuiltin("partition", builtinPartition),
 	makeBuiltin("perms", builtinPerms),
+	makeBuiltin("pow", builtinPow),
 	makeBuiltin("prepend", builtinPrepend),
 	makeBuiltin("product", builtinProduct),
+	makeBuiltin("rebase", builtinRebase),
 	makeBuiltin("regex", builtinRegex),
+	makeBuiltin("reject", builtinReject),
+	makeBuiltin("render", builtinRender),
 	makeBuiltin("repeat", builtinRepeat),
 	makeBuiltin("replicate", builtinReplicate),
 	makeBuiltin("reverse", builtinReverse),
@@ -153,17 +162,19 @@ var builtinsList = [...]*BuiltinValue{
 	makeBuiltin("sorted", builtinSorted),
 	makeBuiltin("sortedBy", builtinSortedBy),
 	makeBuiltin("split", builtinSplit),
+	makeBuiltin("sqrt", builtinSqrt),
 	makeBuiltin("stabilize", builtinStabilize),
 	makeBuiltin("string", builtinString),
 	makeBuiltin("sum", builtinSum),
-	makeBuiltin("sumBy", builtinSumBy),
+	makeBuiltin("swap", builtinSwap),
 	makeBuiltin("tail", builtinTail),
 	makeBuiltin("tails", builtinTails),
 	makeBuiltin("take", builtinTake),
 	makeBuiltin("takeWhile", builtinTakeWhile),
-	makeBuiltin("toUpper", builtinToUpper),
+	makeBuiltin("toBase", builtinToBase),
 	makeBuiltin("toLower", builtinToLower),
 	makeBuiltin("toSet", builtinToSet),
+	makeBuiltin("toUpper", builtinToUpper),
 	makeBuiltin("tr", builtinTr),
 	makeBuiltin("transpose", builtinTranspose),
 	makeBuiltin("type", builtinType),
@@ -660,9 +671,35 @@ func builtinDot(l, r Value) Value {
 	panic(fmt.Sprintf("unhandled type combination %T . %T", l, r))
 }
 
-func builtinSplit(split Value, it Value) Value {
+func builtinSplit(env *Environment, split Value, it Value) Value {
 	if a, ok := it.(*ArrayValue); ok {
 		it = internalArrayIterator(a)
+	}
+
+	switch split.(type) {
+	case *BuiltinValue, *FuncValue, *PartialValue:
+		if s, ok := it.(*StringValue); ok {
+			it = internalStringIterator(s)
+		}
+		iter := it.(*IteratorValue)
+		return &IteratorValue{
+			next: func() Value {
+				v := iter.next()
+				for v != nil && internalTruthy(env.apply1(split, v)) {
+					v = iter.next()
+				}
+				if v == nil {
+					return nil
+				}
+				var a []Value
+				for v != nil && !internalTruthy(env.apply1(split, v)) {
+					a = append(a, v)
+					v = iter.next()
+				}
+				return makeArray(a)
+			},
+			infinite: iter.infinite,
+		}
 	}
 
 	switch it := it.(type) {
@@ -712,7 +749,12 @@ func builtinJoin(between Value, it *IteratorValue) *IteratorValue {
 }
 
 func builtinLines(s *StringValue) Value {
-	return builtinSplit(makeString("\n"), s)
+	lines := strings.Split(s.s, "\n")
+	a := make([]Value, len(lines))
+	for i := range a {
+		a[i] = makeString(lines[i])
+	}
+	return makeArray(a)
 }
 
 func builtinGroups(s *StringValue) Value {
@@ -736,6 +778,10 @@ func builtinChar(s *StringValue) *IntegerValue {
 	return makeInteger(int64(s.s[0]))
 }
 
+func builtinASCII(i *IntegerValue) *StringValue {
+	return makeString(string([]byte{byte(i.i)}))
+}
+
 func builtinChars(s *StringValue) *ArrayValue {
 	elems := make([]Value, len(s.s))
 	for i := range elems {
@@ -754,9 +800,8 @@ func builtinDigits(v Value) *ArrayValue {
 	switch v := v.(type) {
 	case *IntegerValue:
 		var elems []Value
-		for v.i != 0 {
-			elems = append(elems, makeInteger(v.i%10))
-			v.i /= 10
+		for i := v.i; i != 0; i /= 10 {
+			elems = append(elems, makeInteger(i%10))
 		}
 		for i := 0; i < len(elems)/2; i++ {
 			j := len(elems) - i - 1
@@ -1004,7 +1049,7 @@ func builtinDropWhile(env *Environment, fn Value, it *IteratorValue) *IteratorVa
 	var fst Value
 	for fst = it.next(); fst != nil; fst = it.next() {
 		c := internalClone(fst)
-		if internalTruthy(env.apply1(fn, c)) {
+		if !internalTruthy(env.apply1(fn, c)) {
 			break
 		}
 	}
@@ -1056,6 +1101,20 @@ func builtinCleave(env *Environment, fn Value, it *IteratorValue) *ArrayValue {
 		})
 	}
 	panic("cleave: invalid separator")
+}
+
+func builtinCleaves(env *Environment, a *ArrayValue) *IteratorValue {
+	i := 1
+	return &IteratorValue{
+		next: func() Value {
+			if i >= len(a.elems) {
+				return nil
+			}
+			v := makeArray([]Value{makeArray(a.elems[:i]), makeArray(a.elems[i:])})
+			i++
+			return v
+		},
+	}
 }
 
 func builtinRuns(it *IteratorValue) *IteratorValue {
@@ -1125,6 +1184,24 @@ func builtinWindow(n *IntegerValue, it Value) *IteratorValue {
 		}
 	}
 	panic(fmt.Sprintf("count: unhandled type %T", it))
+}
+
+func builtinPairs(a *ArrayValue) *IteratorValue {
+	i := 0
+	j := 0
+	return &IteratorValue{
+		next: func() Value {
+			if j++; j >= len(a.elems) {
+				i++
+				j = i + 1
+				if j >= len(a.elems) {
+					return nil
+				}
+			}
+			v := makeArray([]Value{a.elems[i], a.elems[j]})
+			return v
+		},
+	}
 }
 
 func builtinPartition(n *IntegerValue, it Value) Value {
@@ -1549,16 +1626,13 @@ func builtinSum(it *IteratorValue) Value {
 	return sum
 }
 
-func builtinSumBy(env *Environment, fn Value, it *IteratorValue) Value {
-	sum := it.next()
-	if sum == nil {
-		return makeInteger(0)
-	}
-	sum = env.apply(fn, sum)
-	for v := it.next(); v != nil; v = it.next() {
-		sum = builtinAdd(sum, env.apply(fn, v))
-	}
-	return sum
+func builtinSqrt(i *IntegerValue) *IntegerValue {
+	return makeInteger(int64(math.Sqrt(float64(i.i))))
+}
+
+func builtinSwap(env *Environment, i, j Value, a *ArrayValue) Value {
+	iv, jv := builtinDot(a, i), builtinDot(a, j)
+	return builtinSet(env, i, jv, builtinSet(env, j, iv, a))
 }
 
 func builtinProduct(it *IteratorValue) Value {
@@ -1572,12 +1646,32 @@ func builtinProduct(it *IteratorValue) Value {
 	return prod
 }
 
+func builtinPow(base, exp *IntegerValue) Value {
+	r := int64(1)
+	for i := int64(0); i < exp.i; i++ {
+		r *= base.i
+	}
+	return makeInteger(int64(r))
+}
+
 func builtinFirst(env *Environment, fn Value, it *IteratorValue) Value {
 	for v := it.next(); v != nil; v = it.next() {
 		v = internalClone(v)
 		if internalTruthy(env.apply1(fn, v)) {
 			return v
 		}
+	}
+	panic("first: no elements satisfy predicate")
+}
+
+func builtinFirstIndex(env *Environment, fn Value, it *IteratorValue) *IntegerValue {
+	var i int64
+	for v := it.next(); v != nil; v = it.next() {
+		v = internalClone(v)
+		if internalTruthy(env.apply1(fn, v)) {
+			return makeInteger(i)
+		}
+		i++
 	}
 	panic("first: no elements satisfy predicate")
 }
@@ -2266,6 +2360,10 @@ func builtinAlpha() *StringValue {
 	return makeString("abcdefghijklmnopqrstuvwxyz")
 }
 
+func builtinNumeric() *StringValue {
+	return makeString("0123456789")
+}
+
 func builtinIota() *IteratorValue {
 	n := int64(-1)
 	return &IteratorValue{
@@ -2277,17 +2375,32 @@ func builtinIota() *IteratorValue {
 	}
 }
 
-func builtinFlip(env *Environment, fn Value) *BuiltinValue {
-	return &BuiltinValue{
-		name:  "flip",
-		nargs: env.apply(fn).(*PartialValue).need(),
-		fn: func(env *Environment, args []Value) Value {
-			for i := 0; i < len(args)/2; i++ {
-				j := len(args) - i - 1
-				args[i], args[j] = args[j], args[i]
-			}
-			return env.apply(fn, args...)
-		},
+func builtinFlip(env *Environment, v Value) Value {
+	switch v := v.(type) {
+	case *IteratorValue:
+		return builtinFlip(env, builtinCollect(v))
+	case *ArrayValue:
+		if len(v.elems) != 2 {
+			panic("flip: invalid argument")
+		}
+		return makeArray([]Value{v.elems[1], v.elems[0]})
+	case *StringValue:
+		if len(v.s) != 2 {
+			panic("flip: invalid argument")
+		}
+		return makeString(string([]byte{v.s[1], v.s[0]}))
+	default:
+		return &BuiltinValue{
+			name:  "flip",
+			nargs: env.apply(v).(*PartialValue).need(),
+			fn: func(env *Environment, args []Value) Value {
+				for i := 0; i < len(args)/2; i++ {
+					j := len(args) - i - 1
+					args[i], args[j] = args[j], args[i]
+				}
+				return env.apply(v, args...)
+			},
+		}
 	}
 }
 
@@ -2450,6 +2563,40 @@ func builtinInvert(m *MapValue) *MapValue {
 		im.set(m.vals[i], a)
 	}
 	return im
+}
+
+func builtinGCD(a *ArrayValue) *IntegerValue {
+	if len(a.elems) == 0 {
+		panic("gcd: invalid argument")
+	}
+	r := a.elems[0].(*IntegerValue).i
+	for _, v := range a.elems[1:] {
+		i := v.(*IntegerValue).i
+		for i != 0 {
+			r, i = i, r%i
+		}
+	}
+	return makeInteger(r)
+}
+
+func builtinLCM(a *ArrayValue) *IntegerValue {
+	if len(a.elems) == 0 {
+		panic("lcm: invalid argument")
+	}
+	gcd := func(a, b int64) int64 {
+		for b != 0 {
+			a, b = b, a%b
+		}
+		return a
+	}
+	lcm := func(a, b int64) int64 {
+		return a * b / gcd(a, b)
+	}
+	r := a.elems[0].(*IntegerValue).i
+	for _, v := range a.elems[1:] {
+		r = lcm(r, v.(*IntegerValue).i)
+	}
+	return makeInteger(r)
 }
 
 func builtinGraph(it *IteratorValue) *MapValue {
@@ -2701,6 +2848,17 @@ func builtinHistogram(it *IteratorValue) *MapValue {
 		m.set(v, builtinAdd(n, makeInteger(1)))
 	}
 	return m
+}
+
+func builtinArea(vs *ArrayValue) *IntegerValue {
+	var sum int64
+	for i := range vs.elems {
+		v1, v2 := vs.elems[i].(*ArrayValue), vs.elems[(i+1)%len(vs.elems)].(*ArrayValue)
+		v1x, v1y := v1.elems[0].(*IntegerValue).i, v1.elems[1].(*IntegerValue).i
+		v2x, v2y := v2.elems[0].(*IntegerValue).i, v2.elems[1].(*IntegerValue).i
+		sum += (v1x*v2y - v2x*v1y)
+	}
+	return builtinAbs(makeInteger(sum / 2))
 }
 
 func builtinMove(cmd *ArrayValue, pos *ArrayValue) *ArrayValue {
