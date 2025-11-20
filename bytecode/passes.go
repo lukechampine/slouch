@@ -2,7 +2,10 @@ package bytecode
 
 import (
 	"fmt"
+	"sort"
+	"strings"
 
+	"github.com/peter-evans/patience"
 	"lukechampine.com/slouch/token"
 )
 
@@ -34,7 +37,6 @@ func (c *Compiler) passFoldConstants(pp *Program) {
 			for j := range args {
 				args[j] = program[i-n+j].(instConstant).Value
 			}
-			fmt.Println("replace", program[i-n:i+1], "with", instConstant{Value: fn(args)})
 			program[i] = instConstant{Value: fn(args)}
 			program = append(program[:i-n], program[i:]...)
 		}
@@ -42,9 +44,12 @@ func (c *Compiler) passFoldConstants(pp *Program) {
 		switch in := program[i].(type) {
 		case instArray:
 			replace(in.Len, func(args []Value) Value { return ValArray(args) })
+		case instAssoc:
+			replace(in.Len*2, func(args []Value) Value { return makeAssoc(args) })
 		case instPrefixOp:
 			replace(1, func(args []Value) Value { return evalPrefixOp(in.Kind, args[0]) })
 		case instInfixOp:
+			// TODO: special case for Dot
 			replace(2, func(args []Value) Value { return evalInfixOp(in.Kind, args[0], args[1]) })
 		case instDup:
 			if constArgs(1) {
@@ -61,36 +66,27 @@ func (c *Compiler) passFoldConstants(pp *Program) {
 				}
 			}
 		case instCall:
-			if constArgs(1) {
-				v := program[i-1].(instConstant).Value
-				if bf, ok := builtins[v.(ValFunc).Name]; ok && bf.Arity == in.Arity {
-					replace(1+bf.Arity, func(args []Value) Value { return bf.Fn(args[1:]) })
-				}
-			}
-		}
-	}
-}
+			// if constArgs(1) {
+			// 	v := program[i-1].(instConstant).Value.(ValFunc)
+			// 	// partially apply as many args as possible
+			// 	// n := in.Arity
+			// 	// for j := 0; j < n && i-2-n+j >= 0; j++ {
+			// 	// 	if ic, ok := program[i-2-n+j].(instConstant); ok {
+			// 	// 		v.Applied = append(v.Applied, ic.Value)
+			// 	// 		in.Arity--
+			// 	// 	} else {
+			// 	// 		break
+			// 	// 	}
+			// 	// }
+			// 	// program[i-1] = instConstant{v}
+			// 	// program[i] = in
+			// 	// if in.Arity == 0 {
 
-func (c *Compiler) passLoadConstants(pp *Program) {
-	// pre:         post:
-	// CONST 3      CONST 3
-	// ASSIGN x
-	// LOAD x
-	program := *pp
-	defer func() { *pp = program }()
-
-	consts := make(map[string]instConstant)
-	for i := 0; i+1 < len(program); i++ {
-		if ic, ok := program[i].(instConstant); ok {
-			if ia, ok := program[i+1].(instAssign); ok {
-				consts[ia.Name] = ic
-				program = append(program[:i], program[i+2:]...)
-				i--
-			}
-		} else if il, ok := program[i].(instLoad); ok {
-			if ic, ok := consts[il.Name]; ok {
-				program[i] = ic
-			}
+			// 	// }
+			// 	if bf, ok := builtins[v.Name]; ok && in.Arity == 0 {
+			// 		replace(1+bf.Arity, func(args []Value) Value { return bf.Fn(args[:len(args)-1]) })
+			// 	}
+			// }
 		}
 	}
 }
@@ -106,6 +102,21 @@ func (c *Compiler) passStoreLoad(pp *Program) {
 	//   RETURN
 	program := *pp
 	defer func() { *pp = program }()
+
+	// only consider assignments that are loaded once
+	assigns := make(map[string]int)
+	for i := 0; i < len(c.program); i++ {
+		if il, ok := c.program[i].(instLoad); ok {
+			assigns[il.Name]++
+		}
+	}
+	for _, cf := range c.fns {
+		for i := 0; i < len(cf.Body); i++ {
+			if il, ok := cf.Body[i].(instLoad); ok {
+				assigns[il.Name]++
+			}
+		}
+	}
 
 	stackImpact := func(i Instruction) int {
 		switch i := i.(type) {
@@ -129,23 +140,17 @@ func (c *Compiler) passStoreLoad(pp *Program) {
 outer:
 	for i := 0; i < len(program); i++ {
 		if ia, ok := program[i].(instAssign); ok && i+1 < len(program) {
+			if assigns[ia.Name] != 1 {
+				continue
+			}
 			// scan forward, tracking stack height
 			var height int
-			j := i + 1
-			for ; j < len(program); j++ {
+			for j := i + 1; j < len(program); j++ {
 				if il, ok := program[j].(instLoad); ok && il.Name == ia.Name {
 					if height != 0 {
 						continue outer
 					}
-					// scan forward, checking that this is the only load of this variable
-					for k := j + 1; k < len(program); k++ {
-						if il, ok := program[k].(instLoad); ok && il.Name == ia.Name {
-							continue outer
-						} else if _, ok := program[k].(instReturn); ok {
-							break
-						}
-					}
-					// safe to delete both the load and the store
+					// delete both the load and the store
 					program = append(program[:j], program[j+1:]...)
 					program = append(program[:i], program[i+1:]...)
 					break
@@ -255,8 +260,8 @@ func (c *Compiler) passInline(pp *Program) {
 	}
 	for i := 0; i+1 < len(program); i++ {
 		if ic, ok := program[i].(instConstant); ok {
-			if _, ok := program[i+1].(instCall); ok {
-				if vf, ok := ic.Value.(ValFunc); ok {
+			if vf, ok := ic.Value.(ValFunc); ok {
+				if ic, ok := program[i+1].(instCall); ok && ic.Arity == vf.Arity {
 					if cf, ok := c.fns[vf.Name]; ok && canInline(cf.Body) {
 						body := cf.Body[1 : len(cf.Body)-1] // strip funcdef and return
 						program = append(append(program[:i:i], body...), program[i+2:]...)
@@ -264,6 +269,69 @@ func (c *Compiler) passInline(pp *Program) {
 				}
 			}
 		}
+	}
+}
+
+func (c *Compiler) passLoadConstants() {
+	// pre:         post:
+	// CONST 3      CONST 3
+	// ASSIGN x
+	// LOAD x
+
+	fnNames := make([]string, 0, len(c.fns))
+	for name := range c.fns {
+		fnNames = append(fnNames, name)
+	}
+	sort.Strings(fnNames)
+	var out Program
+	for _, name := range fnNames {
+		out = append(out, c.fns[name].Body...)
+	}
+	out = append(out, c.program...)
+	old := out.String()
+	defer func() {
+		out = out[:0]
+		for _, name := range fnNames {
+			out = append(out, c.fns[name].Body...)
+		}
+		out = append(out, c.program...)
+		new := out.String()
+		if old != new {
+			c.optDiffs = append(c.optDiffs, optDiff{
+				desc:  "load-constants",
+				patch: lineDiff(old, new),
+			})
+		}
+	}()
+
+	fns := []*Program{&c.program}
+	for _, cf := range c.fns {
+		fns = append(fns, &cf.Body)
+	}
+	consts := make(map[string]instConstant)
+	for _, pp := range fns {
+		program := *pp
+		for i := 0; i+1 < len(program); i++ {
+			if ic, ok := program[i].(instConstant); ok {
+				if ia, ok := program[i+1].(instAssign); ok {
+					consts[ia.Name] = ic
+					program = append(program[:i], program[i+2:]...)
+					i--
+				}
+			}
+		}
+		*pp = program
+	}
+	for _, pp := range fns {
+		program := *pp
+		for i := range program {
+			if il, ok := program[i].(instLoad); ok {
+				if ic, ok := consts[il.Name]; ok {
+					program[i] = ic
+				}
+			}
+		}
+		*pp = program
 	}
 }
 
@@ -282,25 +350,69 @@ func (c *Compiler) passUnusedFunctions() {
 			}
 		}
 	}
-	for fn := range c.fns {
+	for fn, cf := range c.fns {
 		if !called[fn] {
 			delete(c.fns, fn)
+			c.optDiffs = append(c.optDiffs, optDiff{
+				desc:  "unused functions",
+				patch: lineDiff(cf.Body.String(), ""),
+			})
 		}
 	}
 }
 
+type optDiff struct {
+	desc  string
+	patch string
+}
+
+func lineDiff(old, new string) string {
+	a := strings.Split(old, "\n")
+	b := strings.Split(new, "\n")
+	diffs := patience.Diff(a, b)
+	s := make([]string, len(diffs))
+	for i, d := range diffs {
+		switch d.Type {
+		case patience.Insert:
+			s[i] = "\x1b[32m" + d.Text + "\x1b[0m"
+		case patience.Delete:
+			s[i] = "\x1b[31m" + d.Text + "\x1b[0m"
+		case patience.Equal:
+			s[i] = d.Text
+		}
+	}
+	return strings.Join(s, "\n")
+}
+
 func (c *Compiler) optimize() {
+	c.optDiffs = nil
+	opts := []struct {
+		name  string
+		apply func(*Program)
+	}{
+		{"fold-constants", c.passFoldConstants},
+		{"store-load", c.passStoreLoad},
+		{"dedup", c.passDedup},
+		{"dead-code", c.passDeadCode},
+		{"unused-labels", c.passUnusedLabels},
+		{"inline", c.passInline},
+	}
 	var done bool
+	var pass int
 	optimizeFn := func(fn *Program) {
 		for {
 			old := fn.String() // TODO: very inefficient! switch to a dirty bit
-			c.passFoldConstants(fn)
-			c.passLoadConstants(fn)
-			c.passStoreLoad(fn)
-			c.passDedup(fn)
-			c.passDeadCode(fn)
-			c.passUnusedLabels(fn)
-			c.passInline(fn)
+			for _, opt := range opts {
+				old := fn.String()
+				opt.apply(fn)
+				if new := fn.String(); new != old {
+					c.optDiffs = append(c.optDiffs, optDiff{
+						desc:  fmt.Sprintf("%v (pass %v)", opt.name, pass),
+						patch: lineDiff(old, new),
+					})
+				}
+				pass++
+			}
 			if fn.String() == old {
 				break
 			}
@@ -313,6 +425,7 @@ func (c *Compiler) optimize() {
 			optimizeFn(&fn.Body)
 		}
 		optimizeFn(&c.program)
+		c.passLoadConstants()
 		c.passUnusedFunctions()
 	}
 }

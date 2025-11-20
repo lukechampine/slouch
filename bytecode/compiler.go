@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
-	"strings"
 
 	"lukechampine.com/slouch/ast"
 	"lukechampine.com/slouch/token"
@@ -21,122 +20,6 @@ var opNameTab = map[token.Kind]string{
 	token.Or:        "OR",
 	token.Equals:    "EQ",
 	token.NotEquals: "NEQ",
-}
-
-type Value interface {
-	isValue()
-	fmt.Stringer
-}
-
-type ValBool bool
-type ValInt int64
-type ValString string
-type ValArray []Value
-type ValFunc struct {
-	Name  string
-	Arity int
-}
-
-func (ValBool) isValue()           {}
-func (ValInt) isValue()            {}
-func (ValString) isValue()         {}
-func (ValArray) isValue()          {}
-func (ValFunc) isValue()           {}
-func (v ValBool) String() string   { return strconv.FormatBool(bool(v)) }
-func (v ValInt) String() string    { return strconv.FormatInt(int64(v), 10) }
-func (v ValString) String() string { return strconv.Quote(string(v)) }
-func (v ValArray) String() string {
-	var sb strings.Builder
-	sb.WriteByte('[')
-	for i, e := range v {
-		if i > 0 {
-			sb.WriteString(", ")
-		}
-		sb.WriteString(e.String())
-	}
-	sb.WriteByte(']')
-	return sb.String()
-}
-func (v ValFunc) String() string { return fmt.Sprintf("%v<%v-adic>", v.Name, v.Arity) }
-
-func evalPrefixOp(op token.Kind, a Value) Value {
-	switch op {
-	case token.Negative:
-		return ValInt(-a.(ValInt))
-	default:
-		panic(fmt.Sprintf("unhandled prefix operator %v", op))
-	}
-}
-
-func evalInfixOp(op token.Kind, a, b Value) Value {
-	switch op {
-	case token.Plus:
-		switch a.(type) {
-		case ValInt:
-			return ValInt(a.(ValInt) + b.(ValInt))
-		case ValString:
-			return ValString(a.(ValString) + b.(ValString))
-		default:
-			panic("+: unhandled operand types")
-		}
-	case token.Minus:
-		switch a.(type) {
-		case ValInt:
-			return ValInt(a.(ValInt) - b.(ValInt))
-		default:
-			panic("-: unhandled operand types")
-		}
-	case token.Star:
-		switch a.(type) {
-		case ValInt:
-			return ValInt(a.(ValInt) * b.(ValInt))
-		default:
-			panic("*: unhandled operand types")
-		}
-	case token.Slash:
-		switch a.(type) {
-		case ValInt:
-			return ValInt(a.(ValInt) / b.(ValInt))
-		default:
-			panic("/: unhandled operand types")
-		}
-	case token.And:
-		switch a.(type) {
-		case ValBool:
-			return ValBool(a.(ValBool) && b.(ValBool))
-		default:
-			panic("and: unhandled operand types")
-		}
-	case token.Or:
-		switch a.(type) {
-		case ValBool:
-			return ValBool(a.(ValBool) || b.(ValBool))
-		default:
-			panic("or: unhandled operand types")
-		}
-	case token.Equals:
-		switch a := a.(type) {
-		case ValArray:
-			b, ok := b.(ValArray)
-			if !ok || len(a) != len(b) {
-				return ValBool(false)
-			}
-			for i := range a {
-				if a[i] != b[i] {
-					return ValBool(false)
-				}
-			}
-			return ValBool(true)
-		case ValBool, ValInt, ValString:
-			return ValBool(a == b)
-		default:
-			panic("==: unhandled operand types")
-		}
-	case token.NotEquals:
-		return !evalInfixOp(op, a, b).(ValBool)
-	default:
-		panic(fmt.Sprintf("unhandled infix operator %v", op))
-	}
 }
 
 type Instruction interface {
@@ -220,13 +103,14 @@ type compiledFunc struct {
 }
 
 type Compiler struct {
-	program Program
-	label   int
-	lambda  int
-	fns     map[string]*compiledFunc
-	vars    map[string]string
-	ssa     int
-	err     error // sticky
+	program  Program
+	label    int
+	lambda   int
+	fns      map[string]*compiledFunc
+	vars     map[string]string
+	ssa      int
+	optDiffs []optDiff
+	err      error // sticky
 }
 
 func (c *Compiler) setErr(err error) {
@@ -281,12 +165,10 @@ func containsShallowHoles(e ast.Expr) bool {
 	isShallow := true
 	hasHoles := false
 	ast.Visit(e, func(n ast.Node) bool {
-		if _, ok := n.(ast.Lambda); ok {
+		hasHoles = hasHoles || isHole(n)
+		switch n.(type) {
+		case ast.Lambda, ast.FnCall, ast.Pipe:
 			isShallow = false
-		} else if _, ok := n.(ast.FnCall); ok {
-			isShallow = false
-		} else if isHole(n) {
-			hasHoles = true
 		}
 		return isShallow
 	})
@@ -307,12 +189,6 @@ func (c *Compiler) emitHoleLambda(e ast.Expr) {
 			return ast.Ident{Name: params[len(params)-1]}
 		}
 		switch n := n.(type) {
-		case ast.Splat:
-			n.Fn = rec(n.Fn)
-			return n
-		case ast.Rep:
-			n.Fn = rec(n.Fn)
-			return n
 		case ast.Negative:
 			n.Value = rec(n.Value)
 			return n
@@ -387,7 +263,7 @@ func (c *Compiler) pushExpr(e ast.Expr) {
 			c.pushExpr(e)
 		}
 		if e.Assoc {
-			c.emit(instAssoc{Len: len(e.Elems)})
+			c.emit(instAssoc{Len: len(e.Elems) / 2})
 		} else {
 			c.emit(instArray{Len: len(e.Elems)})
 		}
@@ -409,12 +285,6 @@ func (c *Compiler) pushExpr(e ast.Expr) {
 			c.pushExpr(e.Right)
 			c.emit(instInfixOp{Kind: e.Op})
 		}
-	case ast.FnCall:
-		for _, arg := range e.Args {
-			c.pushExpr(arg)
-		}
-		c.pushExpr(e.Fn)
-		c.emit(instCall{Arity: len(e.Args)})
 	case ast.Lambda:
 		popScope := c.pushScope()
 		name := c.newLambda()
@@ -431,6 +301,40 @@ func (c *Compiler) pushExpr(e ast.Expr) {
 		}
 		popScope()
 		c.emit(instConstant{ValFunc{Name: name, Arity: e.NumArgs()}})
+	case ast.FnCall:
+		for i := range e.Args {
+			c.pushExpr(e.Args[len(e.Args)-i-1])
+		}
+		c.pushExpr(e.Fn)
+		c.emit(instCall{Arity: len(e.Args)})
+	// case ast.Rep:
+	// 	popScope := c.pushScope()
+	// 	name := c.newLambda()
+	// 	c.emit(instFuncDef{Name: name})
+	// 	params := e.Params()
+	// 	for i := range params {
+	// 		c.assign(params[len(params)-i-1])
+	// 	}
+	// 	c.pushExpr(e.Body)
+	// 	c.emit(instReturn{})
+	// 	c.fns[name] = &compiledFunc{
+	// 		Arity: e.NumArgs(),
+	// 		Body:  c.program,
+	// 	}
+	// 	popScope()
+	// 	c.emit(instConstant{ValFunc{Name: name, Arity: 1}})
+
+	case ast.Pipe:
+		switch e.Token.Kind {
+		case token.Pipe:
+			c.pushExpr(ast.FnCall{Fn: e.Right, Args: []ast.Expr{e.Left}})
+		case token.PipeRep:
+			c.pushExpr(ast.FnCall{Fn: ast.Rep{Fn: e.Right}, Args: []ast.Expr{e.Left}})
+		case token.PipeSplat:
+			c.pushExpr(ast.FnCall{Fn: ast.Splat{Fn: e.Right}, Args: []ast.Expr{e.Left}})
+		default:
+			panic("unhandled pipe type")
+		}
 	default:
 		panic(fmt.Sprintf("unhandled expr type %T", e))
 	}
@@ -441,8 +345,12 @@ func (c *Compiler) Compile(p ast.Program) (Program, error) {
 	for _, stmt := range p.Stmts {
 		switch stmt := stmt.(type) {
 		case ast.AssignStmt:
+			// to support recursion, we need to assign the name before
+			// evaluating the body
+			c.vars[stmt.Name.Name] = fmt.Sprintf("%v_%v", stmt.Name.Name, c.ssa)
+			c.ssa++
 			c.pushExpr(stmt.X)
-			c.assign(stmt.Name.Name)
+			c.emit(instAssign{Name: c.vars[stmt.Name.Name]})
 		case ast.ExprStmt:
 			c.pushExpr(stmt.X)
 			c.emit(instOutput{})
