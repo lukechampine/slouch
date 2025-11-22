@@ -3,6 +3,7 @@ package bytecode
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"sort"
 	"strconv"
 
@@ -11,15 +12,21 @@ import (
 )
 
 var opNameTab = map[token.Kind]string{
-	token.Negative:  "NEGATE",
-	token.Plus:      "ADD",
-	token.Minus:     "SUBTRACT",
-	token.Star:      "MULTIPLY",
-	token.Slash:     "DIVIDE",
-	token.And:       "AND",
-	token.Or:        "OR",
-	token.Equals:    "EQ",
-	token.NotEquals: "NEQ",
+	token.Negative:      "NEGATE",
+	token.Plus:          "ADD",
+	token.Minus:         "SUBTRACT",
+	token.Star:          "MULTIPLY",
+	token.Slash:         "DIVIDE",
+	token.And:           "AND",
+	token.Or:            "OR",
+	token.Equals:        "EQ",
+	token.NotEquals:     "NEQ",
+	token.Greater:       "GREATER",
+	token.Less:          "LESS",
+	token.GreaterEquals: "GTE",
+	token.LessEquals:    "LTE",
+	token.DivisibleBy:   "DIVISIBLE_BY",
+	token.Dot:           "DOT",
 }
 
 type Instruction interface {
@@ -38,49 +45,64 @@ type (
 	instOutput   struct{}
 	instDup      struct{}
 	instPop      struct{}
+	instSwap     struct{}
 	instJump     struct{ Target string }
 	instJumpEq   struct {
 		Value  Value
 		Target string
 	}
-	instTarget  struct{ Name string }
-	instFuncDef struct{ Name string }
-	instCall    struct{ Arity int }
-	instReturn  struct{}
+	instTarget      struct{ Name string }
+	instFuncDef     struct{ Name string }
+	instDynamicCall struct{ Arity int }
+	instStaticCall  struct{ Func ValFunc }
+	instReturn      struct{}
+	instSplat       struct{}
+	instRep         struct{}
+	instTruthy      struct{}
 )
 
-func (instConstant) isInstruction()   {}
-func (instArray) isInstruction()      {}
-func (instAssoc) isInstruction()      {}
-func (instAssign) isInstruction()     {}
-func (instLoad) isInstruction()       {}
-func (instPrefixOp) isInstruction()   {}
-func (instInfixOp) isInstruction()    {}
-func (instOutput) isInstruction()     {}
-func (instDup) isInstruction()        {}
-func (instPop) isInstruction()        {}
-func (instJump) isInstruction()       {}
-func (instJumpEq) isInstruction()     {}
-func (instTarget) isInstruction()     {}
-func (instFuncDef) isInstruction()    {}
-func (instCall) isInstruction()       {}
-func (instReturn) isInstruction()     {}
-func (i instConstant) String() string { return fmt.Sprintf("CONST %v", i.Value) }
-func (i instArray) String() string    { return fmt.Sprintf("ARRAY %v", i.Len) }
-func (i instAssoc) String() string    { return fmt.Sprintf("ASSOC %v", i.Len) }
-func (i instAssign) String() string   { return fmt.Sprintf("ASSIGN %s", i.Name) }
-func (i instLoad) String() string     { return fmt.Sprintf("LOAD %s", i.Name) }
-func (i instPrefixOp) String() string { return opNameTab[i.Kind] }
-func (i instInfixOp) String() string  { return opNameTab[i.Kind] }
-func (i instOutput) String() string   { return "OUTPUT" }
-func (i instDup) String() string      { return "DUP" }
-func (i instPop) String() string      { return "POP" }
-func (i instJump) String() string     { return fmt.Sprintf("JUMP %v", i.Target) }
-func (i instJumpEq) String() string   { return fmt.Sprintf("JUMP_EQ %v %v", i.Value, i.Target) }
-func (i instTarget) String() string   { return fmt.Sprintf("@%s", i.Name) }
-func (i instFuncDef) String() string  { return fmt.Sprintf("fn %s:", i.Name) }
-func (i instCall) String() string     { return fmt.Sprintf("CALL %v", i.Arity) }
-func (i instReturn) String() string   { return "RETURN" }
+func (instConstant) isInstruction()      {}
+func (instArray) isInstruction()         {}
+func (instAssoc) isInstruction()         {}
+func (instAssign) isInstruction()        {}
+func (instLoad) isInstruction()          {}
+func (instPrefixOp) isInstruction()      {}
+func (instInfixOp) isInstruction()       {}
+func (instOutput) isInstruction()        {}
+func (instDup) isInstruction()           {}
+func (instPop) isInstruction()           {}
+func (instSwap) isInstruction()          {}
+func (instJump) isInstruction()          {}
+func (instJumpEq) isInstruction()        {}
+func (instTarget) isInstruction()        {}
+func (instFuncDef) isInstruction()       {}
+func (instDynamicCall) isInstruction()   {}
+func (instStaticCall) isInstruction()    {}
+func (instReturn) isInstruction()        {}
+func (instSplat) isInstruction()         {}
+func (instRep) isInstruction()           {}
+func (instTruthy) isInstruction()        {}
+func (i instConstant) String() string    { return fmt.Sprintf("CONST %v", i.Value) }
+func (i instArray) String() string       { return fmt.Sprintf("ARRAY %v", i.Len) }
+func (i instAssoc) String() string       { return fmt.Sprintf("ASSOC %v", i.Len) }
+func (i instAssign) String() string      { return fmt.Sprintf("ASSIGN %s", i.Name) }
+func (i instLoad) String() string        { return fmt.Sprintf("LOAD %s", i.Name) }
+func (i instPrefixOp) String() string    { return opNameTab[i.Kind] }
+func (i instInfixOp) String() string     { return opNameTab[i.Kind] }
+func (i instOutput) String() string      { return "OUTPUT" }
+func (i instDup) String() string         { return "DUP" }
+func (i instPop) String() string         { return "POP" }
+func (i instSwap) String() string        { return "SWAP" }
+func (i instJump) String() string        { return fmt.Sprintf("JUMP %v", i.Target) }
+func (i instJumpEq) String() string      { return fmt.Sprintf("JUMP_EQ %v %v", i.Value, i.Target) }
+func (i instTarget) String() string      { return fmt.Sprintf("@%s", i.Name) }
+func (i instFuncDef) String() string     { return fmt.Sprintf("fn %s:", i.Name) }
+func (i instDynamicCall) String() string { return fmt.Sprintf("DCALL %v", i.Arity) }
+func (i instStaticCall) String() string  { return fmt.Sprintf("CALL %v", i.Func) }
+func (i instReturn) String() string      { return "RETURN" }
+func (i instSplat) String() string       { return "SPLAT" }
+func (i instRep) String() string         { return "REP" }
+func (i instTruthy) String() string      { return "TRUTHY" }
 
 type Program []Instruction
 
@@ -141,9 +163,7 @@ func (c *Compiler) pushScope() func() {
 	c.program = nil
 	vars := c.vars
 	c.vars = make(map[string]string)
-	for k, v := range vars {
-		c.vars[k] = v
-	}
+	maps.Copy(c.vars, vars)
 	return func() {
 		c.program = parent
 		c.vars = vars
@@ -167,7 +187,7 @@ func containsShallowHoles(e ast.Expr) bool {
 	ast.Visit(e, func(n ast.Node) bool {
 		hasHoles = hasHoles || isHole(n)
 		switch n.(type) {
-		case ast.Lambda, ast.FnCall, ast.Pipe:
+		case ast.Lambda, ast.FnCall, ast.Pipe, ast.Splat, ast.Rep:
 			isShallow = false
 		}
 		return isShallow
@@ -177,10 +197,6 @@ func containsShallowHoles(e ast.Expr) bool {
 
 func (c *Compiler) emitHoleLambda(e ast.Expr) {
 	// create lambda whose body is e, with holes replaced by params
-	//
-	// NOTE: even though we use x,y,z etc. here, we won't collide with the
-	// parent scope, as the compiler immediately rewrites them to SSA form
-	// anyway.
 	var params []string
 	var rec func(ast.Expr) ast.Expr
 	rec = func(n ast.Expr) ast.Expr {
@@ -189,6 +205,8 @@ func (c *Compiler) emitHoleLambda(e ast.Expr) {
 			return ast.Ident{Name: params[len(params)-1]}
 		}
 		switch n := n.(type) {
+		case ast.Integer, ast.String, ast.Ident:
+			return n
 		case ast.Negative:
 			n.Value = rec(n.Value)
 			return n
@@ -206,8 +224,14 @@ func (c *Compiler) emitHoleLambda(e ast.Expr) {
 			n.Left = rec(n.Left)
 			n.Right = rec(n.Right)
 			return n
-		default:
+		case ast.Splat:
+			n.Fn = rec(n.Fn)
 			return n
+		case ast.Rep:
+			n.Fn = rec(n.Fn)
+			return n
+		default:
+			panic(fmt.Sprintf("unhandled expr type in emitHoleLambda: %T", n))
 		}
 	}
 	e = rec(e)
@@ -215,8 +239,8 @@ func (c *Compiler) emitHoleLambda(e ast.Expr) {
 	popScope := c.pushScope()
 	name := c.newLambda()
 	c.emit(instFuncDef{Name: name})
-	for i := range params {
-		c.assign(params[len(params)-i-1])
+	for _, p := range params {
+		c.assign(p)
 	}
 	c.pushExpr(e)
 	c.emit(instReturn{})
@@ -259,8 +283,8 @@ func (c *Compiler) pushExpr(e ast.Expr) {
 			c.setErr(errors.New("assoc: dangling key"))
 			return
 		}
-		for _, e := range e.Elems {
-			c.pushExpr(e)
+		for i := range e.Elems {
+			c.pushExpr(e.Elems[len(e.Elems)-i-1])
 		}
 		if e.Assoc {
 			c.emit(instAssoc{Len: len(e.Elems) / 2})
@@ -274,24 +298,32 @@ func (c *Compiler) pushExpr(e ast.Expr) {
 		if e.Op == token.And || e.Op == token.Or {
 			// short circuit
 			c.pushExpr(e.Left)
+			c.emit(instTruthy{})
 			c.emit(instDup{})
 			l := c.newLabel()
 			c.emit(instJumpEq{Value: ValBool(e.Op == token.Or), Target: l})
 			c.emit(instPop{})
 			c.pushExpr(e.Right)
+			c.emit(instTruthy{})
 			c.emit(instTarget{Name: l})
 		} else {
-			c.pushExpr(e.Left)
 			c.pushExpr(e.Right)
+			c.pushExpr(e.Left)
 			c.emit(instInfixOp{Kind: e.Op})
 		}
+	case ast.Splat:
+		c.pushExpr(e.Fn)
+		c.emit(instSplat{})
+	case ast.Rep:
+		c.pushExpr(e.Fn)
+		c.emit(instRep{})
 	case ast.Lambda:
 		popScope := c.pushScope()
 		name := c.newLambda()
 		c.emit(instFuncDef{Name: name})
 		params := e.Params()
-		for i := range params {
-			c.assign(params[len(params)-i-1])
+		for _, p := range params {
+			c.assign(p)
 		}
 		c.pushExpr(e.Body)
 		c.emit(instReturn{})
@@ -306,24 +338,7 @@ func (c *Compiler) pushExpr(e ast.Expr) {
 			c.pushExpr(e.Args[len(e.Args)-i-1])
 		}
 		c.pushExpr(e.Fn)
-		c.emit(instCall{Arity: len(e.Args)})
-	// case ast.Rep:
-	// 	popScope := c.pushScope()
-	// 	name := c.newLambda()
-	// 	c.emit(instFuncDef{Name: name})
-	// 	params := e.Params()
-	// 	for i := range params {
-	// 		c.assign(params[len(params)-i-1])
-	// 	}
-	// 	c.pushExpr(e.Body)
-	// 	c.emit(instReturn{})
-	// 	c.fns[name] = &compiledFunc{
-	// 		Arity: e.NumArgs(),
-	// 		Body:  c.program,
-	// 	}
-	// 	popScope()
-	// 	c.emit(instConstant{ValFunc{Name: name, Arity: 1}})
-
+		c.emit(instDynamicCall{Arity: len(e.Args)})
 	case ast.Pipe:
 		switch e.Token.Kind {
 		case token.Pipe:

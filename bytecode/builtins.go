@@ -85,6 +85,20 @@ func init() {
 			},
 		},
 
+		"count": {
+			Arity: 2,
+			Fn: func(vm *VM, args []Value) Value {
+				fn := args[0].(ValFunc)
+				i := 0
+				for _, v := range toIcicle(args[1]).collect() {
+					if vm.Call(fn, []Value{v}).(ValBool) {
+						i++
+					}
+				}
+				return ValInt(int64(i))
+			},
+		},
+
 		"enum": makeBuiltinBinary(func(_ *VM, start, end ValInt) *ValIcicle {
 			return &ValIcicle{
 				next: func(i int) Value {

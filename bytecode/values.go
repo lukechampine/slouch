@@ -19,8 +19,18 @@ type ValString string
 type ValArray []Value
 type ValFunc struct {
 	Name    string
+	Mod     token.Kind // for splat/rep
 	Arity   int
 	Applied []Value
+}
+
+func (v ValFunc) Need() int {
+	switch v.Mod {
+	case token.Splat, token.Rep:
+		return min(1, v.Arity-len(v.Applied))
+	default:
+		return v.Arity - len(v.Applied)
+	}
 }
 
 func (ValBool) isValue()           {}
@@ -44,7 +54,22 @@ func (v ValArray) String() string {
 	return sb.String()
 }
 func (v ValFunc) String() string {
-	return fmt.Sprintf("%v(%v)", v.Name, strings.Repeat(",_", v.Arity)[1:])
+	args := make([]string, v.Arity)
+	for i := 0; i < v.Arity; i++ {
+		if i < len(v.Applied) {
+			args[i] = v.Applied[i].String()
+		} else {
+			args[i] = "_"
+		}
+	}
+	mod := ""
+	switch v.Mod {
+	case token.Splat:
+		mod = "-<"
+	case token.Rep:
+		mod = "-:"
+	}
+	return fmt.Sprintf("%v%v(%v)", mod, v.Name, strings.Join(args, ","))
 }
 
 func assocHash(v Value) string {
@@ -121,10 +146,10 @@ func (ice *ValIcicle) String() string {
 }
 
 func (ice *ValIcicle) get(i int) Value {
-	if ice.next == nil {
-		return nil
-	}
 	for ice.len() <= i {
+		if ice.next == nil {
+			return nil
+		}
 		v := ice.next(ice.len())
 		if v == nil {
 			ice.next = nil
@@ -254,7 +279,7 @@ func evalInfixOp(op token.Kind, a, b Value) Value {
 			panic("==: unhandled operand types")
 		}
 	case token.NotEquals:
-		return !evalInfixOp(op, a, b).(ValBool)
+		return !evalInfixOp(token.Equals, a, b).(ValBool)
 	case token.Dot:
 		switch a := a.(type) {
 		case ValArray:
@@ -276,6 +301,21 @@ func evalInfixOp(op token.Kind, a, b Value) Value {
 			return v
 		}
 		panic(fmt.Sprintf("unhandled type combination %T . %T", a, b))
+	case token.Greater:
+		return ValBool(internalLess(b, a))
+	case token.Less:
+		return ValBool(internalLess(a, b))
+	case token.GreaterEquals:
+		return ValBool(!internalLess(a, b))
+	case token.LessEquals:
+		return ValBool(!internalLess(b, a))
+	case token.DivisibleBy:
+		switch a.(type) {
+		case ValInt:
+			return ValBool(a.(ValInt)%b.(ValInt) == 0)
+		default:
+			panic("%?: unhandled operand types")
+		}
 	default:
 		panic(fmt.Sprintf("unhandled infix operator %v", op))
 	}
@@ -293,4 +333,19 @@ func internalLess(a, b Value) bool {
 		}
 	}
 	panic(fmt.Sprintf("cannot order %T relative to %T", a, b))
+}
+
+func internalTruthy(v Value) bool {
+	switch v := v.(type) {
+	case ValInt:
+		return v != 0
+	case ValString:
+		return v != ""
+	case ValBool:
+		return bool(v)
+	case ValArray:
+		return len(v) != 0
+	default:
+		panic(fmt.Sprintf("truthy: unhandled type %T", v))
+	}
 }

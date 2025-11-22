@@ -2,12 +2,70 @@ package bytecode
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
 	"github.com/peter-evans/patience"
 	"lukechampine.com/slouch/token"
 )
+
+func stackRequired(i Instruction) int {
+	switch i := i.(type) {
+	case instArray:
+		return i.Len
+	case instAssoc:
+		return i.Len
+	case instDynamicCall:
+		return i.Arity + 1
+	case instStaticCall:
+		return i.Func.Need()
+	case instInfixOp, instSwap:
+		return 2
+	case instAssign, instPrefixOp, instSplat, instRep, instOutput, instDup, instPop, instTruthy, instJumpEq:
+		return 1
+	case instTarget, instFuncDef, instReturn, instJump, instConstant, instLoad:
+		return 0
+	default:
+		panic(fmt.Sprintf("unhandled instruction %T", i))
+	}
+}
+
+func stackImpact(is ...Instruction) (total int) {
+	for _, i := range is {
+		switch i := i.(type) {
+		case instArray:
+			total += 1 - i.Len
+		case instAssoc:
+			total += 1 - i.Len
+		case instDynamicCall:
+			total += 1 - (i.Arity + 1)
+		case instStaticCall:
+			total += 1 - (i.Func.Arity - len(i.Func.Applied))
+		case instInfixOp, instAssign, instPrefixOp, instOutput, instPop, instJumpEq:
+			total += -1
+		case instTarget, instFuncDef, instReturn, instSwap, instSplat, instRep, instTruthy, instJump:
+			total += 0
+		case instConstant, instLoad, instDup:
+			total += 1
+		default:
+			panic(fmt.Sprintf("unhandled instruction %T", i))
+		}
+	}
+	return
+}
+
+func match1[A Instruction](p Program, a *A) bool {
+	if ia, ok := p[0].(A); ok {
+		*a = ia
+		return true
+	}
+	return false
+}
+
+func match2[A, B Instruction](p Program, a *A, b *B) bool {
+	return match1(p, a) && match1(p[1:], b)
+}
 
 func (c *Compiler) passFoldConstants(pp *Program) {
 	// pre:         post:
@@ -22,7 +80,7 @@ func (c *Compiler) passFoldConstants(pp *Program) {
 			if i-n < 0 {
 				return false
 			}
-			for j := 0; j < n; j++ {
+			for j := range n {
 				if _, ok := program[i-n+j].(instConstant); !ok {
 					return false
 				}
@@ -35,12 +93,15 @@ func (c *Compiler) passFoldConstants(pp *Program) {
 			}
 			args := make([]Value, n)
 			for j := range args {
-				args[j] = program[i-n+j].(instConstant).Value
+				args[j] = program[i-j-1].(instConstant).Value
 			}
 			program[i] = instConstant{Value: fn(args)}
 			program = append(program[:i-n], program[i:]...)
 		}
 
+		if !constArgs(1) {
+			continue // minimum requirement for all cases
+		}
 		switch in := program[i].(type) {
 		case instArray:
 			replace(in.Len, func(args []Value) Value { return ValArray(args) })
@@ -48,45 +109,128 @@ func (c *Compiler) passFoldConstants(pp *Program) {
 			replace(in.Len*2, func(args []Value) Value { return makeAssoc(args) })
 		case instPrefixOp:
 			replace(1, func(args []Value) Value { return evalPrefixOp(in.Kind, args[0]) })
+		case instTruthy:
+			replace(1, func(args []Value) Value { return ValBool(internalTruthy(args[0])) })
 		case instInfixOp:
 			// TODO: special case for Dot
 			replace(2, func(args []Value) Value { return evalInfixOp(in.Kind, args[0], args[1]) })
 		case instDup:
-			if constArgs(1) {
-				program[i] = program[i-1]
+			program[i] = program[i-1]
+		case instSwap:
+			if constArgs(2) {
+				program = slices.Replace(program, i-2, i+1, Program{program[i-1], program[i-2]}...)
 			}
 		case instJumpEq:
-			if constArgs(1) {
-				v := program[i-1].(instConstant).Value
-				if evalInfixOp(token.Equals, v, in.Value).(ValBool) {
-					program[i] = instJump{Target: in.Target}
-					program = append(program[:i-1], program[i:]...)
-				} else {
-					program = append(program[:i-1], program[i+1:]...)
+			v := program[i-1].(instConstant).Value
+			if evalInfixOp(token.Equals, v, in.Value).(ValBool) {
+				program[i] = instJump{Target: in.Target}
+				program = append(program[:i-1], program[i:]...)
+			} else {
+				program = append(program[:i-1], program[i+1:]...)
+			}
+		case instDynamicCall:
+			if fn := program[i-1].(instConstant).Value.(ValFunc); fn.Mod == 0 && in.Arity != fn.Need() {
+				for len(fn.Applied) < fn.Arity && fn.Mod == 0 && constArgs(2) {
+					v := program[i-2].(instConstant).Value
+					fn.Applied = append(fn.Applied, v)
+					if in.Arity--; in.Arity == 0 {
+						program = slices.Replace(program, i-2, i+1, Program{instConstant{Value: fn}}...)
+					} else {
+						program = slices.Replace(program, i-2, i+1, Program{instConstant{Value: fn}, in}...)
+					}
 				}
 			}
-		case instCall:
-			// if constArgs(1) {
-			// 	v := program[i-1].(instConstant).Value.(ValFunc)
-			// 	// partially apply as many args as possible
-			// 	// n := in.Arity
-			// 	// for j := 0; j < n && i-2-n+j >= 0; j++ {
-			// 	// 	if ic, ok := program[i-2-n+j].(instConstant); ok {
-			// 	// 		v.Applied = append(v.Applied, ic.Value)
-			// 	// 		in.Arity--
-			// 	// 	} else {
-			// 	// 		break
-			// 	// 	}
-			// 	// }
-			// 	// program[i-1] = instConstant{v}
-			// 	// program[i] = in
-			// 	// if in.Arity == 0 {
+		case instStaticCall:
+			for len(in.Func.Applied) < in.Func.Arity && in.Func.Mod == 0 && constArgs(1) {
+				v := program[i-1].(instConstant).Value
+				in.Func.Applied = append(in.Func.Applied, v)
+				program[i] = in
+				program = append(program[:i-1], program[i:]...)
+			}
+		case instSplat:
+			if fn, ok := program[i-1].(instConstant).Value.(ValFunc); ok {
+				fn.Mod = token.Splat
+				replace(1, func(args []Value) Value { return fn })
+			}
+		case instRep:
+			if fn, ok := program[i-1].(instConstant).Value.(ValFunc); ok {
+				fn.Mod = token.Rep
+				replace(1, func(args []Value) Value { return fn })
+			}
+		}
+	}
+}
 
-			// 	// }
-			// 	if bf, ok := builtins[v.Name]; ok && in.Arity == 0 {
-			// 		replace(1+bf.Arity, func(args []Value) Value { return bf.Fn(args[:len(args)-1]) })
-			// 	}
-			// }
+func (c *Compiler) passUnsplat(pp *Program) {
+	// pre:              post:
+	// ARRAY 2           CALL foo(_,_)
+	// CALL -<foo(_,_)
+	program := *pp
+	defer func() { *pp = program }()
+
+	for i := 0; i+1 < len(program); i++ {
+		var ia instArray
+		var isc instStaticCall
+		if match2(program[i:], &ia, &isc) && isc.Func.Mod == token.Splat {
+			if isc.Func.Arity == ia.Len {
+				isc.Func.Mod = 0
+				program = slices.Replace(program, i, i+2, Program{isc}...)
+			}
+		}
+		// also check for array consts
+		var ic instConstant
+		if match2(program[i:], &ic, &isc) && isc.Func.Mod == token.Splat {
+			if va, ok := ic.Value.(ValArray); ok {
+				if isc.Func.Arity == len(va) {
+					for i := range va {
+						isc.Func.Applied = append(isc.Func.Applied, va[len(va)-i-1])
+					}
+					isc.Func.Mod = 0
+					program = slices.Replace(program, i, i+2, Program{isc}...)
+				}
+			}
+		}
+	}
+}
+
+func (c *Compiler) passUnrep(pp *Program) {
+	// pre:              post:
+	// CONST 2           CALL foo(2,2)
+	// CALL -:foo(_,_)
+	program := *pp
+	defer func() { *pp = program }()
+
+	for i := 0; i+1 < len(program); i++ {
+		var ic instConstant
+		var isc instStaticCall
+		if match2(program[i:], &ic, &isc) && isc.Func.Mod == token.Rep {
+			for isc.Func.Need() > 0 {
+				isc.Func.Applied = append(isc.Func.Applied, ic.Value)
+			}
+			isc.Func.Mod = 0
+			program = slices.Replace(program, i, i+2, Program{isc}...)
+		}
+	}
+}
+
+func (c *Compiler) passStaticCall(pp *Program) {
+	// pre:             post:
+	// CONST foo(_,_)   CALL foo(_,_)
+	// DCALL 2
+	program := *pp
+	defer func() { *pp = program }()
+
+	for i := 0; i+1 < len(program); i++ {
+		var ic instConstant
+		var idc instDynamicCall
+		if match2(program[i:], &ic, &idc) {
+			if vf, ok := ic.Value.(ValFunc); ok {
+				if idc.Arity == vf.Need() {
+					program[i] = instStaticCall{Func: vf}
+					program = append(program[:i+1], program[i+2:]...)
+					i--
+				}
+			}
 		}
 	}
 }
@@ -118,25 +262,6 @@ func (c *Compiler) passStoreLoad(pp *Program) {
 		}
 	}
 
-	stackImpact := func(i Instruction) int {
-		switch i := i.(type) {
-		case instArray:
-			return 1 - i.Len
-		case instAssoc:
-			return 1 - i.Len
-		case instCall:
-			return -(1 + i.Arity)
-		case instInfixOp, instAssign, instPrefixOp, instOutput, instPop, instJump, instJumpEq:
-			return -1
-		case instTarget, instFuncDef, instReturn:
-			return 0
-		case instConstant, instLoad, instDup:
-			return 1
-		default:
-			panic(fmt.Sprintf("unhandled instruction %T", i))
-		}
-	}
-
 outer:
 	for i := 0; i < len(program); i++ {
 		if ia, ok := program[i].(instAssign); ok && i+1 < len(program) {
@@ -147,14 +272,17 @@ outer:
 			var height int
 			for j := i + 1; j < len(program); j++ {
 				if il, ok := program[j].(instLoad); ok && il.Name == ia.Name {
-					if height != 0 {
+					if height == 0 {
+						// delete both the load and the store
+						program = slices.Delete(program, j, j+1)
+						program = slices.Delete(program, i, i+1)
+					}
+					continue outer
+				} else {
+					if stackRequired(program[j]) > height {
+						// deleting store+load would change behavior
 						continue outer
 					}
-					// delete both the load and the store
-					program = append(program[:j], program[j+1:]...)
-					program = append(program[:i], program[i+1:]...)
-					break
-				} else {
 					height += stackImpact(program[j])
 				}
 			}
@@ -162,7 +290,7 @@ outer:
 	}
 }
 
-func (c *Compiler) passDedup(pp *Program) {
+func (c *Compiler) passDupLoad(pp *Program) {
 	// pre:         post:
 	// LOAD x       LOAD x
 	// LOAD x       DUP
@@ -190,23 +318,29 @@ func (c *Compiler) passDeadCode(pp *Program) {
 
 outer:
 	for i := 0; i < len(program); i++ {
-		if _, ok := program[i].(instConstant); ok && i+1 < len(program) {
-			if _, ok := program[i+1].(instPop); ok {
-				program = append(program[:i], program[i+2:]...)
-			}
+		var ic instConstant
+		var ip instPop
+		if match2(program[i:], &ic, &ip) {
+			program = slices.Delete(program, i, i+2)
 		} else if ij, ok := program[i].(instJump); ok {
 			for j := i + 1; j < len(program); j++ {
 				if il, ok := program[j].(instTarget); ok {
 					if ij.Target == il.Name {
-						program = append(program[:i], program[j:]...)
+						program = slices.Delete(program, i, j)
 					} else {
-						program = append(program[:i+1], program[j:]...)
+						program = slices.Delete(program, i+1, j)
 					}
 					continue outer
 				}
 			}
 		}
+		var id instDup
+		var is instSwap
+		if match2(program[i:], &id, &is) {
+			program = slices.Delete(program, i, i+2)
+		}
 	}
+
 }
 
 func (c *Compiler) passUnusedLabels(pp *Program) {
@@ -236,10 +370,8 @@ func (c *Compiler) passUnusedLabels(pp *Program) {
 }
 
 func (c *Compiler) passInline(pp *Program) {
-	// pre:           post:
-	// fn lambda1:    DIVIDE
-	//   DIVIDE
-	//   RETURN
+	// pre:             post:
+	// CALL foo(_,_)    DIVIDE
 	//
 	program := *pp
 	defer func() { *pp = program }()
@@ -258,15 +390,68 @@ func (c *Compiler) passInline(pp *Program) {
 		}
 		return true
 	}
-	for i := 0; i+1 < len(program); i++ {
-		if ic, ok := program[i].(instConstant); ok {
-			if vf, ok := ic.Value.(ValFunc); ok {
-				if ic, ok := program[i+1].(instCall); ok && ic.Arity == vf.Arity {
-					if cf, ok := c.fns[vf.Name]; ok && canInline(cf.Body) {
-						body := cf.Body[1 : len(cf.Body)-1] // strip funcdef and return
-						program = append(append(program[:i:i], body...), program[i+2:]...)
-					}
+	for i := 0; i < len(program); i++ {
+		if isc, ok := program[i].(instStaticCall); ok && isc.Func.Mod == 0 {
+			if cf, ok := c.fns[isc.Func.Name]; ok && canInline(cf.Body) {
+				body := cf.Body[1 : len(cf.Body)-1] // strip funcdef and return
+				// expand any applied args
+				args := make([]Instruction, len(isc.Func.Applied))
+				for j := range isc.Func.Applied {
+					args[j] = instConstant{Value: isc.Func.Applied[j]}
 				}
+				program = slices.Replace(program, i, i+1, append(args, body...)...)
+			}
+		}
+	}
+}
+
+func (c *Compiler) passCSE(pp *Program) {
+	// pre:               post:
+	// LOAD x_0           LOAD x_0
+	// CALL string(_)     CALL string(_)
+	// ADD			      DUP
+	// LOAD x_0           ASSIGN x_1
+	// CALL string(_)     ADD
+	//                    LOAD x_1
+
+	program := *pp
+	defer func() { *pp = program }()
+
+	worthIt := func(seq Program) bool {
+		// must have a total stack impact of +1 and contain at least 1 call
+		if stackImpact(seq...) != 1 {
+			return false
+		}
+		for _, in := range seq {
+			switch in.(type) {
+			case instDynamicCall, instStaticCall:
+				return true
+			}
+		}
+		return false
+	}
+
+	for i := 0; i < len(program); i++ {
+		for size := len(program[i:]) / 2; size > 0 && i+size <= len(program); size-- {
+			if !worthIt(program[i : i+size]) {
+				continue
+			}
+			seq := program[i : i+size].String()
+			var matches []int
+			for j := i + size; j+size <= len(program); j++ {
+				if program[j:j+size].String() == seq {
+					matches = append(matches, j)
+					j += size - 1
+				}
+			}
+			if len(matches) > 0 {
+				name := fmt.Sprintf("_cse_%v", c.ssa)
+				c.vars[name] = seq
+				c.ssa++
+				for _, j := range matches {
+					program = slices.Replace(program, j, j+size, Program{instLoad{Name: name}}...)
+				}
+				program = slices.Insert(program, i+size, Program{instDup{}, instAssign{Name: name}}...)
 			}
 		}
 	}
@@ -288,21 +473,25 @@ func (c *Compiler) passLoadConstants() {
 		out = append(out, c.fns[name].Body...)
 	}
 	out = append(out, c.program...)
-	old := out.String()
-	defer func() {
-		out = out[:0]
-		for _, name := range fnNames {
-			out = append(out, c.fns[name].Body...)
-		}
-		out = append(out, c.program...)
-		new := out.String()
-		if old != new {
-			c.optDiffs = append(c.optDiffs, optDiff{
-				desc:  "load-constants",
-				patch: lineDiff(old, new),
-			})
-		}
-	}()
+
+	// diff
+	{
+		old := out.String()
+		defer func() {
+			out = out[:0]
+			for _, name := range fnNames {
+				out = append(out, c.fns[name].Body...)
+			}
+			out = append(out, c.program...)
+			new := out.String()
+			if old != new {
+				c.optDiffs = append(c.optDiffs, optDiff{
+					desc:  "load-constants",
+					patch: lineDiff(old, new),
+				})
+			}
+		}()
+	}
 
 	fns := []*Program{&c.program}
 	for _, cf := range c.fns {
@@ -312,12 +501,12 @@ func (c *Compiler) passLoadConstants() {
 	for _, pp := range fns {
 		program := *pp
 		for i := 0; i+1 < len(program); i++ {
-			if ic, ok := program[i].(instConstant); ok {
-				if ia, ok := program[i+1].(instAssign); ok {
-					consts[ia.Name] = ic
-					program = append(program[:i], program[i+2:]...)
-					i--
-				}
+			var ic instConstant
+			var ia instAssign
+			if match2(program[i:], &ic, &ia) {
+				consts[ia.Name] = ic
+				program = append(program[:i], program[i+2:]...)
+				i--
 			}
 		}
 		*pp = program
@@ -341,12 +530,22 @@ func (c *Compiler) passUnusedFunctions() {
 		fns = append(fns, cf.Body)
 	}
 	called := make(map[string]bool)
+	var visit func(v Value)
+	visit = func(v Value) {
+		if vf, ok := v.(ValFunc); ok {
+			called[vf.Name] = true
+			for _, v := range vf.Applied {
+				visit(v)
+			}
+		}
+	}
 	for _, program := range fns {
-		for i := 0; i < len(program); i++ {
-			if ic, ok := program[i].(instConstant); ok {
-				if vf, ok := ic.Value.(ValFunc); ok {
-					called[vf.Name] = true
-				}
+		for _, in := range program {
+			switch in := in.(type) {
+			case instConstant:
+				visit(in.Value)
+			case instStaticCall:
+				visit(in.Func)
 			}
 		}
 	}
@@ -354,7 +553,7 @@ func (c *Compiler) passUnusedFunctions() {
 		if !called[fn] {
 			delete(c.fns, fn)
 			c.optDiffs = append(c.optDiffs, optDiff{
-				desc:  "unused functions",
+				desc:  "unused functions " + fmt.Sprint(called),
 				patch: lineDiff(cf.Body.String(), ""),
 			})
 		}
@@ -391,11 +590,15 @@ func (c *Compiler) optimize() {
 		apply func(*Program)
 	}{
 		{"fold-constants", c.passFoldConstants},
+		{"unsplat", c.passUnsplat},
+		{"unrep", c.passUnrep},
+		{"static-call", c.passStaticCall},
 		{"store-load", c.passStoreLoad},
-		{"dedup", c.passDedup},
+		{"dup-load", c.passDupLoad},
 		{"dead-code", c.passDeadCode},
 		{"unused-labels", c.passUnusedLabels},
 		{"inline", c.passInline},
+		{"cse", c.passCSE},
 	}
 	var done bool
 	var pass int
@@ -419,6 +622,7 @@ func (c *Compiler) optimize() {
 			done = false
 		}
 	}
+
 	for !done {
 		done = true
 		for _, fn := range c.fns {
