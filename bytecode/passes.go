@@ -430,7 +430,24 @@ func (c *Compiler) passInline(pp *Program) {
 	for i := 0; i < len(program); i++ {
 		if isc, ok := program[i].(instStaticCall); ok && isc.Func.Mod == 0 {
 			if cf, ok := c.fns[isc.Func.Name]; ok && canInline(cf.Body) {
-				body := cf.Body[1 : len(cf.Body)-1] // strip funcdef and return
+				body := slices.Clone(cf.Body[1 : len(cf.Body)-1]) // strip funcdef and return
+				// give all vars unique names
+				rename := make(map[string]string)
+				for i := range body {
+					switch in := body[i].(type) {
+					case instAssign:
+						name := c.newVar(in.Name + "_inline")
+						rename[in.Name] = name
+						in.Name = name
+						body[i] = in
+					case instLoad:
+						if newName, ok := rename[in.Name]; ok {
+							in.Name = newName
+							body[i] = in
+						}
+					}
+				}
+
 				// push applied args onto stack
 				args := make([]Instruction, len(isc.Func.Applied))
 				for i := range isc.Func.Applied {
@@ -482,9 +499,7 @@ func (c *Compiler) passCSE(pp *Program) {
 				}
 			}
 			if len(matches) > 0 {
-				name := fmt.Sprintf("_cse_%v", c.ssa)
-				c.vars[name] = seq
-				c.ssa++
+				name := c.newVar("cse")
 				for _, j := range matches {
 					program = slices.Replace(program, j, j+size, Program{instLoad{Name: name}}...)
 				}
@@ -558,13 +573,9 @@ func (c *Compiler) passUnusedFunctions() {
 		}
 	}
 	visitProgram(c.program)
-	for fn, cf := range c.fns {
+	for fn := range c.fns {
 		if !called[fn] {
 			delete(c.fns, fn)
-			c.optDiffs = append(c.optDiffs, optDiff{
-				desc:  "unused functions " + fmt.Sprint(called),
-				patch: lineDiff(cf.Body.String(), ""),
-			})
 		}
 	}
 }

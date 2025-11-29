@@ -110,7 +110,11 @@ func (p Program) String() string {
 	var s string
 	for _, in := range p {
 		switch in.(type) {
-		case instTarget, instFuncDef:
+		case instTarget:
+		case instFuncDef:
+			if s != "" {
+				s += "\n"
+			}
 		default:
 			s += "\t"
 		}
@@ -129,8 +133,7 @@ type Compiler struct {
 	label    int
 	lambda   int
 	fns      map[string]*compiledFunc
-	vars     map[string]string
-	ssa      int
+	vars     map[string]struct{}
 	optDiffs []optDiff
 	err      error // sticky
 }
@@ -162,7 +165,7 @@ func (c *Compiler) pushScope() func() {
 	parent := c.program
 	c.program = nil
 	vars := c.vars
-	c.vars = make(map[string]string)
+	c.vars = make(map[string]struct{})
 	maps.Copy(c.vars, vars)
 	return func() {
 		c.program = parent
@@ -170,10 +173,23 @@ func (c *Compiler) pushScope() func() {
 	}
 }
 
+func (c *Compiler) define(name string) {
+	if _, ok := c.vars[name]; ok {
+		c.setErr(fmt.Errorf("variable %s redefined", name))
+		return
+	}
+	c.vars[name] = struct{}{}
+}
+
 func (c *Compiler) assign(name string) {
-	c.vars[name] = fmt.Sprintf("%v_%v", name, c.ssa)
-	c.ssa++
-	c.emit(instAssign{Name: c.vars[name]})
+	c.define(name)
+	c.emit(instAssign{Name: name})
+}
+
+func (c *Compiler) newVar(name string) string {
+	name = fmt.Sprintf("_var%d_%v", len(c.vars)+1, name)
+	c.define(name)
+	return name
 }
 
 func isHole(n ast.Node) bool {
@@ -269,8 +285,8 @@ func (c *Compiler) pushExpr(e ast.Expr) {
 	case ast.Ident:
 		if e.Name == "true" || e.Name == "false" {
 			c.emit(instConstant{ValBool(e.Name == "true")})
-		} else if ssa, ok := c.vars[e.Name]; ok {
-			c.emit(instLoad{ssa})
+		} else if _, ok := c.vars[e.Name]; ok {
+			c.emit(instLoad{e.Name})
 		} else if cf, ok := c.fns[e.Name]; ok {
 			c.emit(instConstant{ValFunc{Name: e.Name, Arity: cf.Arity}})
 		} else if bf, ok := builtins[e.Name]; ok {
@@ -369,16 +385,20 @@ func (c *Compiler) output() Program {
 }
 
 func (c *Compiler) Compile(p ast.Program) (Program, error) {
+	// to support recursion, we need to define all functions up-front
+	for _, stmt := range p.Stmts {
+		switch stmt := stmt.(type) {
+		case ast.AssignStmt:
+			c.define(stmt.Name.Name)
+		}
+	}
+
 	c.emit(instFuncDef{Name: "main"})
 	for _, stmt := range p.Stmts {
 		switch stmt := stmt.(type) {
 		case ast.AssignStmt:
-			// to support recursion, we need to assign the name before
-			// evaluating the body
-			c.vars[stmt.Name.Name] = fmt.Sprintf("%v_%v", stmt.Name.Name, c.ssa)
-			c.ssa++
 			c.pushExpr(stmt.X)
-			c.emit(instAssign{Name: c.vars[stmt.Name.Name]})
+			c.emit(instAssign{Name: stmt.Name.Name})
 		case ast.ExprStmt:
 			c.pushExpr(stmt.X)
 			c.emit(instOutput{})
@@ -396,9 +416,8 @@ func (c *Compiler) Compile(p ast.Program) (Program, error) {
 func NewCompiler() *Compiler {
 	c := &Compiler{
 		fns:  make(map[string]*compiledFunc),
-		vars: make(map[string]string),
+		vars: make(map[string]struct{}),
 	}
-	c.vars["input"] = fmt.Sprintf("%v_%v", "input", c.ssa)
-	c.ssa++
+	c.define("input")
 	return c
 }

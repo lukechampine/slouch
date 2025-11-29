@@ -187,7 +187,7 @@ func (vm *VM) Run(program []Instruction, input string) error {
 	vm.program = program
 	vm.jmpTab = make(map[string]int)
 	vm.callStack = []stackFrame{{
-		vars: map[string]Value{"input_0": ValString(input)},
+		vars: map[string]Value{"input": ValString(input)},
 		ip:   0,
 	}}
 
@@ -214,8 +214,6 @@ func (vm *VM) Run(program []Instruction, input string) error {
 }
 
 func (vm *VM) Call(fn ValFunc, args []Value) Value {
-	//vm.call(fn, args)
-
 	fn.Applied = append(fn.Applied[:len(fn.Applied):len(fn.Applied)], args...)
 	if fn.Arity != len(fn.Applied) {
 		panic(fmt.Sprintf("%v: expected %v arguments, got %v", fn.Name, fn.Arity, len(fn.Applied)))

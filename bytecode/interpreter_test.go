@@ -79,11 +79,14 @@ func TestCases(t *testing.T) {
 		},
 		{
 			`
-				=rec { len x == 0 or rec (tail x) }
-				rec input
+				=rec { len x and rec2 (tail x) }
+				=rec2 { len x and rec (tail x) }
+				=bar { rec [x, x] }
+				=baz { rec2 [x, x, x] }
+				bar 2 and baz input
 			`,
 			`"foobar"`,
-			`true`,
+			`false`,
 		},
 		{
 			`
