@@ -6,24 +6,27 @@ import (
 )
 
 type builtinFunc struct {
-	Arity int
-	Fn    func(*VM, []Value) Value
+	Arity    int
+	Comptime bool // can be called without a VM
+	Fn       func(*VM, []Value) Value
 }
 
-func makeBuiltinUnary[T, U Value](fn func(*VM, T) U) builtinFunc {
+func makeBuiltinUnary[T, U Value](fn func(T) U) builtinFunc {
 	return builtinFunc{
-		Arity: 1,
-		Fn: func(vm *VM, args []Value) Value {
-			return fn(vm, args[0].(T))
+		Arity:    1,
+		Comptime: true,
+		Fn: func(_ *VM, args []Value) Value {
+			return fn(args[0].(T))
 		},
 	}
 }
 
-func makeBuiltinBinary[T, U, V Value](fn func(*VM, T, U) V) builtinFunc {
+func makeBuiltinBinary[T, U, V Value](fn func(T, U) V) builtinFunc {
 	return builtinFunc{
-		Arity: 2,
-		Fn: func(vm *VM, args []Value) Value {
-			return fn(vm, args[0].(T), args[1].(U))
+		Arity:    2,
+		Comptime: true,
+		Fn: func(_ *VM, args []Value) Value {
+			return fn(args[0].(T), args[1].(U))
 		},
 	}
 }
@@ -99,7 +102,7 @@ func init() {
 			},
 		},
 
-		"enum": makeBuiltinBinary(func(_ *VM, start, end ValInt) *ValIcicle {
+		"enum": makeBuiltinBinary(func(start, end ValInt) *ValIcicle {
 			return &ValIcicle{
 				next: func(i int) Value {
 					if int64(i)+int64(start) >= int64(end) {
@@ -156,7 +159,8 @@ func init() {
 		},
 
 		"max": {
-			Arity: 1,
+			Arity:    1,
+			Comptime: true,
 			Fn: func(_ *VM, args []Value) Value {
 				vals := toIcicle(args[0]).collect()
 				m := vals[0]
@@ -169,7 +173,7 @@ func init() {
 			},
 		},
 
-		"pow": makeBuiltinBinary(func(_ *VM, a, b ValInt) ValInt {
+		"pow": makeBuiltinBinary(func(a, b ValInt) ValInt {
 			r := ValInt(1)
 			for range b {
 				r *= a
@@ -178,7 +182,8 @@ func init() {
 		}),
 
 		"product": {
-			Arity: 1,
+			Arity:    1,
+			Comptime: true,
 			Fn: func(_ *VM, args []Value) Value {
 				vals := toIcicle(args[0]).collect()
 				if len(vals) == 0 {
@@ -193,7 +198,8 @@ func init() {
 		},
 
 		"reverse": {
-			Arity: 1,
+			Arity:    1,
+			Comptime: true,
 			Fn: func(_ *VM, args []Value) Value {
 				switch v := args[0].(type) {
 				case ValString:
@@ -224,12 +230,13 @@ func init() {
 			},
 		},
 
-		"string": makeBuiltinUnary(func(_ *VM, v Value) ValString {
+		"string": makeBuiltinUnary(func(v Value) ValString {
 			return ValString(v.String())
 		}),
 
 		"tail": {
-			Arity: 1,
+			Arity:    1,
+			Comptime: true,
 			Fn: func(_ *VM, args []Value) Value {
 				switch v := args[0].(type) {
 				case ValString:
@@ -242,7 +249,7 @@ func init() {
 			},
 		},
 
-		"toUpper": makeBuiltinUnary(func(_ *VM, s ValString) ValString {
+		"toUpper": makeBuiltinUnary(func(s ValString) ValString {
 			return ValString(strings.ToUpper(string(s)))
 		}),
 	}

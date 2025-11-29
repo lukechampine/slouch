@@ -355,6 +355,19 @@ func (c *Compiler) pushExpr(e ast.Expr) {
 	}
 }
 
+func (c *Compiler) output() Program {
+	fns := make([]string, 0, len(c.fns))
+	for name := range c.fns {
+		fns = append(fns, name)
+	}
+	sort.Strings(fns)
+	var out Program
+	for _, name := range fns {
+		out = append(out, c.fns[name].Body...)
+	}
+	return append(out, c.program...)
+}
+
 func (c *Compiler) Compile(p ast.Program) (Program, error) {
 	c.emit(instFuncDef{Name: "main"})
 	for _, stmt := range p.Stmts {
@@ -377,19 +390,7 @@ func (c *Compiler) Compile(p ast.Program) (Program, error) {
 
 	c.optimize()
 
-	// concat function definitions
-	fns := make([]string, 0, len(c.fns))
-	for name := range c.fns {
-		fns = append(fns, name)
-	}
-	sort.Strings(fns)
-	var out Program
-	for _, name := range fns {
-		out = append(out, c.fns[name].Body...)
-	}
-	c.program = append(out, c.program...)
-
-	return c.program, nil
+	return c.output(), nil
 }
 
 func NewCompiler() *Compiler {

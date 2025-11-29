@@ -3,7 +3,6 @@ package bytecode
 import (
 	"fmt"
 	"slices"
-	"sort"
 	"strings"
 
 	"github.com/peter-evans/patience"
@@ -67,6 +66,14 @@ func match2[A, B Instruction](p Program, a *A, b *B) bool {
 	return match1(p, a) && match1(p[1:], b)
 }
 
+func match3[A, B, C Instruction](p Program, a *A, b *B, c *C) bool {
+	return match2(p, a, b) && match1(p[2:], c)
+}
+
+func match4[A, B, C, D Instruction](p Program, a *A, b *B, c *C, d *D) bool {
+	return match3(p, a, b, c) && match1(p[3:], d)
+}
+
 func (c *Compiler) passFoldConstants(pp *Program) {
 	// pre:         post:
 	// CONST 2      CONST 5
@@ -75,7 +82,7 @@ func (c *Compiler) passFoldConstants(pp *Program) {
 	program := *pp
 	defer func() { *pp = program }()
 
-	for i := 0; i < len(program); i++ {
+	for i := 1; i < len(program); i++ {
 		constArgs := func(n int) bool {
 			if i-n < 0 {
 				return false
@@ -146,6 +153,9 @@ func (c *Compiler) passFoldConstants(pp *Program) {
 				in.Func.Applied = append(in.Func.Applied, v)
 				program[i] = in
 				program = append(program[:i-1], program[i:]...)
+			}
+			if bfn, ok := builtins[in.Func.Name]; ok && bfn.Comptime && in.Func.Mod == 0 && in.Func.Need() == 0 {
+				program[i-1] = instConstant{Value: bfn.Fn(nil, in.Func.Applied)}
 			}
 		case instSplat:
 			if fn, ok := program[i-1].(instConstant).Value.(ValFunc); ok {
@@ -248,28 +258,36 @@ func (c *Compiler) passStoreLoad(pp *Program) {
 	defer func() { *pp = program }()
 
 	// only consider assignments that are loaded once
-	assigns := make(map[string]int)
+	loads := make(map[string]int)
 	for i := 0; i < len(c.program); i++ {
 		if il, ok := c.program[i].(instLoad); ok {
-			assigns[il.Name]++
+			loads[il.Name]++
 		}
 	}
 	for _, cf := range c.fns {
 		for i := 0; i < len(cf.Body); i++ {
 			if il, ok := cf.Body[i].(instLoad); ok {
-				assigns[il.Name]++
+				loads[il.Name]++
 			}
 		}
 	}
 
 outer:
-	for i := 0; i < len(program); i++ {
-		if ia, ok := program[i].(instAssign); ok && i+1 < len(program) {
-			if assigns[ia.Name] != 1 {
+	for i := 0; i+1 < len(program); i++ {
+		if ia, ok := program[i].(instAssign); ok {
+			if loads[ia.Name] != 1 {
 				continue
 			}
 			// scan forward, tracking stack height
 			var height int
+			// HACK: if assign was preceded by a dup (common after CSE),
+			// we can allow stack accesses to be one deeper
+			dup := 0
+			if i > 0 {
+				if _, ok := program[i-1].(instDup); ok {
+					dup = 1
+				}
+			}
 			for j := i + 1; j < len(program); j++ {
 				if il, ok := program[j].(instLoad); ok && il.Name == ia.Name {
 					if height == 0 {
@@ -279,7 +297,7 @@ outer:
 					}
 					continue outer
 				} else {
-					if stackRequired(program[j]) > height {
+					if stackRequired(program[j]) > height+dup {
 						// deleting store+load would change behavior
 						continue outer
 					}
@@ -303,6 +321,25 @@ func (c *Compiler) passDupLoad(pp *Program) {
 			case instLoad:
 				program[i+1] = instDup{}
 			}
+		}
+	}
+}
+
+func (c *Compiler) passSwapLoad(pp *Program) {
+	// pre:         post:
+	// ASSIGN x     SWAP
+	// ASSIGN y
+	// LOAD x
+	// LOAD y
+	program := *pp
+	defer func() { *pp = program }()
+
+	for i := 0; i+1 < len(program); i++ {
+		var ia1, ia2 instAssign
+		var il1, il2 instLoad
+		if match4(program[i:], &ia1, &ia2, &il1, &il2) &&
+			ia1.Name == il1.Name && ia2.Name == il2.Name {
+			program = slices.Replace(program, i, i+4, Program{instSwap{}}...)
 		}
 	}
 }
@@ -394,10 +431,10 @@ func (c *Compiler) passInline(pp *Program) {
 		if isc, ok := program[i].(instStaticCall); ok && isc.Func.Mod == 0 {
 			if cf, ok := c.fns[isc.Func.Name]; ok && canInline(cf.Body) {
 				body := cf.Body[1 : len(cf.Body)-1] // strip funcdef and return
-				// expand any applied args
+				// push applied args onto stack
 				args := make([]Instruction, len(isc.Func.Applied))
-				for j := range isc.Func.Applied {
-					args[j] = instConstant{Value: isc.Func.Applied[j]}
+				for i := range isc.Func.Applied {
+					args[i] = instConstant{Value: isc.Func.Applied[i]}
 				}
 				program = slices.Replace(program, i, i+1, append(args, body...)...)
 			}
@@ -463,36 +500,6 @@ func (c *Compiler) passLoadConstants() {
 	// ASSIGN x
 	// LOAD x
 
-	fnNames := make([]string, 0, len(c.fns))
-	for name := range c.fns {
-		fnNames = append(fnNames, name)
-	}
-	sort.Strings(fnNames)
-	var out Program
-	for _, name := range fnNames {
-		out = append(out, c.fns[name].Body...)
-	}
-	out = append(out, c.program...)
-
-	// diff
-	{
-		old := out.String()
-		defer func() {
-			out = out[:0]
-			for _, name := range fnNames {
-				out = append(out, c.fns[name].Body...)
-			}
-			out = append(out, c.program...)
-			new := out.String()
-			if old != new {
-				c.optDiffs = append(c.optDiffs, optDiff{
-					desc:  "load-constants",
-					patch: lineDiff(old, new),
-				})
-			}
-		}()
-	}
-
 	fns := []*Program{&c.program}
 	for _, cf := range c.fns {
 		fns = append(fns, &cf.Body)
@@ -525,22 +532,10 @@ func (c *Compiler) passLoadConstants() {
 }
 
 func (c *Compiler) passUnusedFunctions() {
-	fns := []Program{c.program}
-	for _, cf := range c.fns {
-		fns = append(fns, cf.Body)
-	}
 	called := make(map[string]bool)
 	var visit func(v Value)
-	visit = func(v Value) {
-		if vf, ok := v.(ValFunc); ok {
-			called[vf.Name] = true
-			for _, v := range vf.Applied {
-				visit(v)
-			}
-		}
-	}
-	for _, program := range fns {
-		for _, in := range program {
+	visitProgram := func(p Program) {
+		for _, in := range p {
 			switch in := in.(type) {
 			case instConstant:
 				visit(in.Value)
@@ -549,6 +544,20 @@ func (c *Compiler) passUnusedFunctions() {
 			}
 		}
 	}
+	visit = func(v Value) {
+		if vf, ok := v.(ValFunc); ok {
+			if !called[vf.Name] {
+				called[vf.Name] = true
+				if cf, ok := c.fns[vf.Name]; ok {
+					visitProgram(cf.Body)
+				}
+			}
+			for _, v := range vf.Applied {
+				visit(v)
+			}
+		}
+	}
+	visitProgram(c.program)
 	for fn, cf := range c.fns {
 		if !called[fn] {
 			delete(c.fns, fn)
@@ -595,41 +604,53 @@ func (c *Compiler) optimize() {
 		{"static-call", c.passStaticCall},
 		{"store-load", c.passStoreLoad},
 		{"dup-load", c.passDupLoad},
+		{"swap-load", c.passSwapLoad},
 		{"dead-code", c.passDeadCode},
 		{"unused-labels", c.passUnusedLabels},
 		{"inline", c.passInline},
 		{"cse", c.passCSE},
 	}
-	var done bool
+	wholeOpt := []struct {
+		name  string
+		apply func()
+	}{
+		{"load-constants", c.passLoadConstants},
+		{"unused-functions", c.passUnusedFunctions},
+	}
 	var pass int
 	optimizeFn := func(fn *Program) {
-		for {
-			old := fn.String() // TODO: very inefficient! switch to a dirty bit
-			for _, opt := range opts {
-				old := fn.String()
-				opt.apply(fn)
-				if new := fn.String(); new != old {
-					c.optDiffs = append(c.optDiffs, optDiff{
-						desc:  fmt.Sprintf("%v (pass %v)", opt.name, pass),
-						patch: lineDiff(old, new),
-					})
-				}
-				pass++
+		for _, opt := range opts {
+			old := fn.String()
+			opt.apply(fn)
+			if new := fn.String(); new != old {
+				c.optDiffs = append(c.optDiffs, optDiff{
+					desc:  fmt.Sprintf("%v (pass %v)", opt.name, pass),
+					patch: lineDiff(old, new),
+				})
 			}
-			if fn.String() == old {
-				break
-			}
-			done = false
+			pass++
 		}
 	}
 
-	for !done {
-		done = true
+	for {
+		old := c.output().String()
 		for _, fn := range c.fns {
 			optimizeFn(&fn.Body)
 		}
 		optimizeFn(&c.program)
-		c.passLoadConstants()
-		c.passUnusedFunctions()
+
+		for _, opt := range wholeOpt {
+			old := c.output().String()
+			opt.apply()
+			if new := c.output().String(); old != new {
+				c.optDiffs = append(c.optDiffs, optDiff{
+					desc:  opt.name,
+					patch: lineDiff(old, new),
+				})
+			}
+		}
+		if c.output().String() == old {
+			break
+		}
 	}
 }

@@ -2,6 +2,7 @@ package bytecode
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"lukechampine.com/slouch/evaluator"
@@ -130,6 +131,14 @@ func TestCases(t *testing.T) {
 			``,
 			`"hi there mister"`,
 		},
+		{
+			`
+				=isPalindrome { string x == (string x | reverse) }
+				enum 100 999 | choose 2 | map product | filter isPalindrome | max
+			`,
+			``,
+			`906609`,
+		},
 	}
 	for _, test := range tests {
 		ast := parser.Parse(lexer.Tokenize(test.program))
@@ -152,6 +161,111 @@ func TestCases(t *testing.T) {
 			t.Log(test.program)
 			t.Log(program)
 			t.Errorf("expected %q, got %q", test.output, output)
+		}
+	}
+}
+
+func TestComptime(t *testing.T) {
+	tests := []struct {
+		program string
+		value   string
+	}{
+		{
+			`
+				toUpper "hello world"
+			`,
+			`"HELLO WORLD"`,
+		},
+		{
+			`
+				[0 or 1, 1 or 0, 0 and 1, 1 and 0]
+			`,
+			`[true, true, false, false]`,
+		},
+		{
+			`
+				{[[1,x],[2,y]]} 3 4
+			`,
+			`[[1, 3], [2, 4]]`,
+		},
+		{
+			`
+				[3, 2] |< -
+			`,
+			`1`,
+		},
+		{
+			`
+				=foo {x - y - z} 3 2 1
+				=bar (_ - _ - _ ) 3 2 1
+				=baz (3 - _ - _ ) 2 1
+				=bat (3 - 2 - _ ) 1
+				=bax 3 - 2 - 1
+				[foo, bar, baz, bat, bax]
+			`,
+			`[0, 0, 0, 0, 0]`,
+		},
+		{
+			`
+				=foo { y - x }
+				=bar foo 2
+				=baz foo 3
+				bar 2 + baz 3
+			`,
+			`0`,
+		},
+		{
+			`
+				[1:"A", 2:"B", 3:"C"].2
+			`,
+			`"B"`,
+		},
+		{
+			`
+				2 | +3 | {[x,x]} |< %?
+			`,
+			`true`,
+		},
+		{
+			`
+				{ x + (_ * y) x } 3 4
+			`,
+			`15`,
+		},
+		{
+			`
+				=a 3
+				=b a + 12
+				b + --a
+			`,
+			`12`,
+		},
+		{
+			`
+				=x "hi" + " there"
+				=y " mis" + "ter"
+				x + y
+			`,
+			`"hi there mister"`,
+		},
+	}
+	for _, test := range tests {
+		ast := parser.Parse(lexer.Tokenize(test.program))
+		c := NewCompiler()
+		program, err := c.Compile(ast)
+		if err != nil {
+			t.Fatal(err)
+		}
+		exp := strings.ReplaceAll(Program{
+			instFuncDef{Name: "main"},
+			instConstant{Value: ValInt(0)},
+			instOutput{},
+		}.String(), "0", test.value)
+		if program.String() != exp {
+			for _, diff := range c.optDiffs {
+				t.Logf("\n%v:\n%v", diff.desc, diff.patch)
+			}
+			t.Errorf("program: %v\nexpected comptime value: %v\ngot:\n%v", test.program, test.value, program)
 		}
 	}
 }
@@ -183,37 +297,4 @@ func BenchmarkAST(b *testing.B) {
 
 	b.ResetTimer()
 	e.Run(p, "", func(v evaluator.Value) { b.Log(b.N, v) })
-}
-
-func TestPalindrome(t *testing.T) {
-	prog := `
-	=isPalindrome { string x == (string x | reverse) }
-	enum 100 999 | choose 2 | map product | filter isPalindrome | max
-`
-	ast := parser.Parse(lexer.Tokenize(prog))
-	c := NewCompiler()
-	program, err := c.Compile(ast)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, diff := range c.optDiffs {
-		t.Logf("\n%v:\n%v", diff.desc, diff.patch)
-	}
-
-	t.Log(program)
-
-	vm := NewVM()
-	var output string
-	vm.output = func(v Value) {
-		if ice, ok := v.(*ValIcicle); ok {
-			v = ice.collect()
-		}
-		output += v.String()
-	}
-	if err := vm.Run(program, ""); err != nil {
-		t.Fatal(err)
-	}
-	if output != "906609" {
-		t.Fatalf("expected 906609, got %q", output)
-	}
 }
