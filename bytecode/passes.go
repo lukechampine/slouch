@@ -419,6 +419,40 @@ func (c *Compiler) passSwapLoad(pp *Program) {
 	}
 }
 
+func (c *Compiler) passArrayDot(pp *Program) {
+	// pre:            post:
+	// CONST 1         CONST "bar"
+	// CONST "foo"
+	// CONST "bar"
+	// ARRAY 2
+	// DOT
+	program := *pp
+	defer func() { *pp = program }()
+
+outer:
+	for i := 0; i+1 < len(program); i++ {
+		var ia instArray
+		var iio instInfixOp
+		if match2(program[i:], &ia, &iio) && iio.Kind == token.Dot {
+			elems := []int{i}
+			j := i
+			for range ia.Len {
+				elemStart, ok := startOfValue(program[:j])
+				if !ok {
+					continue outer
+				}
+				elems = append(elems, elemStart)
+				j = elemStart
+			}
+			if ic, ok := program[j-1].(instConstant); ok {
+				dotted := int(ic.Value.(ValInt))
+				keep := program[elems[dotted+1]:elems[dotted]]
+				program = slices.Replace(program, j-1, i+2, keep...)
+			}
+		}
+	}
+}
+
 func (c *Compiler) passUnusedLabels(pp *Program) {
 	// pre:           post:
 	// CONST true     CONST true
@@ -558,6 +592,42 @@ func (c *Compiler) passCSE(pp *Program) {
 				}
 				if needAssign {
 					program = slices.Insert(program, i+size, Program{instDup{}, instAssign{Name: name}}...)
+				}
+			}
+		}
+	}
+}
+
+func (c *Compiler) passStreamFusion(pp *Program) {
+	// pre:                   post:
+	// CONST 1                CONST 1
+	// CONST [1,2,3]          CONST [1,2,3]
+	// CALL map(fn(_), _)     DOT
+	// DOT                    CALL fn(_)
+	program := *pp
+	defer func() { *pp = program }()
+
+	for i := 0; i+1 < len(program); i++ {
+		var isc instStaticCall
+		var iio instInfixOp
+		if match2(program[i:], &isc, &iio) && iio.Kind == token.Dot {
+			switch isc.Func.Name {
+			case "map":
+				// TODO: make more general
+				if isc.Func.Mod != 0 || len(isc.Func.Applied) < 1 {
+					continue
+				}
+				if len(isc.Func.Applied) == 2 {
+					program = slices.Replace(program, i, i+2, Program{
+						instConstant{Value: isc.Func.Applied[1]},
+						iio,
+						instStaticCall{Func: isc.Func.Applied[0].(ValFunc)},
+					}...)
+				} else {
+					program = slices.Replace(program, i, i+2, Program{
+						iio,
+						instStaticCall{Func: isc.Func.Applied[0].(ValFunc)},
+					}...)
 				}
 			}
 		}
@@ -764,9 +834,11 @@ func (c *Compiler) optimize() {
 		{"dup-op", c.passDupOp},
 		{"dup-load", c.passDupLoad},
 		{"swap-load", c.passSwapLoad},
+		{"array-dot", c.passArrayDot},
 		{"unused-labels", c.passUnusedLabels},
 		{"inline", c.passInline},
 		{"cse", c.passCSE},
+		{"stream-fusion", c.passStreamFusion},
 	}
 	wholeOpt := []struct {
 		name  string

@@ -1,10 +1,12 @@
 package bytecode
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 
+	"lukechampine.com/slouch/ast"
 	"lukechampine.com/slouch/token"
 )
 
@@ -352,5 +354,34 @@ func internalTruthy(v Value) bool {
 		return len(v) != 0
 	default:
 		panic(fmt.Sprintf("truthy: unhandled type %T", v))
+	}
+}
+
+func ParseValue(e ast.Expr) (Value, error) {
+	switch e := e.(type) {
+	case ast.Integer:
+		i, _ := strconv.ParseInt(e.Value, 10, 64)
+		return ValInt(i), nil
+	case ast.String:
+		return ValString(e.Value), nil
+	case ast.Array:
+		if e.Assoc && len(e.Elems)%2 != 0 {
+			return nil, errors.New("assoc: dangling key")
+		}
+		elems := make([]Value, len(e.Elems))
+		for i := range e.Elems {
+			v, err := ParseValue(e.Elems[i])
+			if err != nil {
+				return nil, err
+			}
+			elems[i] = v
+		}
+		if e.Assoc {
+			return makeAssoc(elems), nil
+		} else {
+			return ValArray(elems), nil
+		}
+	default:
+		return nil, fmt.Errorf("not a value: %T", e)
 	}
 }

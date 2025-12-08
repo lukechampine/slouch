@@ -16,6 +16,9 @@ import (
 // - statically determine arity of all functions
 // - compute budget; pause/resume; watch values returned by each function
 //   - builtins tho...
+//
+// - renaming builtins, i.e. =map (+2)
+//   - currently would cause issues with passStreamFusion, maybe others
 
 // replace icicles with streams when possible
 //   need a test case demonstrating the bug...
@@ -26,6 +29,14 @@ func TestCases(t *testing.T) {
 		input   string
 		output  string
 	}{
+
+		{
+			`
+				[1, 2, input] | map (+"bar") | .2
+			`,
+			`"foo"`,
+			`"foobar"`,
+		},
 		{
 			`
 				=rec { len x and rec2 (tail x) }
@@ -133,7 +144,7 @@ func TestCases(t *testing.T) {
 			`
 				(2+2 == 4 or "foo"+input == "foobar") and (2+2 == 5 or input == "bar")
 			`,
-			`bar`,
+			`"bar"`,
 			`true`,
 		},
 		{
@@ -170,15 +181,22 @@ func TestCases(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		var input Value
+		if test.input != "" {
+			input, err = ParseValue(parser.ParseExpr(lexer.Tokenize(test.input)))
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
 
 		// for _, diff := range c.optDiffs {
 		// 	t.Logf("\n%v:\n%v", diff.desc, diff.patch)
 		// }
-		// t.Log(program)
+		// t.Fatal(program)
 
 		var output string
 		vm := NewVM(func(v Value) { output += v.String() })
-		if err := vm.Run(program, test.input); err != nil {
+		if err := vm.Run(program, input); err != nil {
 			t.Fatal(err)
 		} else if output != test.output {
 			for _, diff := range c.optDiffs {
@@ -195,6 +213,12 @@ func TestComptime(t *testing.T) {
 		program string
 		value   string
 	}{
+		{
+			`
+				["foo", 2, true] | map (+2) | .1
+			`,
+			`4`,
+		},
 		{
 			`
 				toUpper "hello world"
@@ -317,7 +341,7 @@ func BenchmarkVM(b *testing.B) {
 
 	vm := NewVM(func(v Value) { b.Log(b.N, v) })
 	b.ResetTimer()
-	vm.Run(program, "")
+	vm.Run(program, nil)
 }
 
 func BenchmarkAST(b *testing.B) {

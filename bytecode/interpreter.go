@@ -183,11 +183,11 @@ func (vm *VM) executeInstruction() error {
 	return nil
 }
 
-func (vm *VM) Run(program []Instruction, input string) error {
+func (vm *VM) Run(program []Instruction, input Value) error {
 	vm.program = program
 	vm.jmpTab = make(map[string]int)
 	vm.callStack = []stackFrame{{
-		vars: map[string]Value{"input": ValString(input)},
+		vars: map[string]Value{"input": input},
 		ip:   0,
 	}}
 
