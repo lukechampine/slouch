@@ -55,9 +55,11 @@ func stackImpact(is ...Instruction) (total int) {
 }
 
 func match1[A Instruction](p Program, a *A) bool {
-	if ia, ok := p[0].(A); ok {
-		*a = ia
-		return true
+	if len(p) > 0 {
+		if ia, ok := p[0].(A); ok {
+			*a = ia
+			return true
+		}
 	}
 	return false
 }
@@ -72,6 +74,38 @@ func match3[A, B, C Instruction](p Program, a *A, b *B, c *C) bool {
 
 func match4[A, B, C, D Instruction](p Program, a *A, b *B, c *C, d *D) bool {
 	return match3(p, a, b, c) && match1(p[3:], d)
+}
+
+func (c *Compiler) passPop(pp *Program) {
+	program := *pp
+	defer func() { *pp = program }()
+
+outer:
+	for i := 0; i < len(program); i++ {
+		if _, ok := program[i].(instPop); ok {
+			// seek backwards until stack is balanced
+			height := -1
+			for j := i - 1; j >= 0; j-- {
+				switch program[j].(type) {
+				case instJump, instJumpEq, instTarget, instFuncDef, instReturn:
+					continue outer
+				}
+				height += stackImpact(program[j])
+				if height == 0 {
+					// check stack requirement for this sequence
+					h := 0
+					for _, in := range program[j : i+1] {
+						if stackRequired(in) > h {
+							continue outer
+						}
+						h += stackImpact(in)
+					}
+					program = slices.Delete(program, j, i+1)
+					break
+				}
+			}
+		}
+	}
 }
 
 func (c *Compiler) passFoldConstants(pp *Program) {
@@ -245,6 +279,46 @@ func (c *Compiler) passStaticCall(pp *Program) {
 	}
 }
 
+func (c *Compiler) passDupOp(pp *Program) {
+	// pre:     post:
+	// DUP      CONST true
+	// EQ
+	program := *pp
+	defer func() { *pp = program }()
+
+	for i := 0; i+1 < len(program); i++ {
+		var id instDup
+		var op instInfixOp
+		if match2(program[i:], &id, &op) {
+			switch op.Kind {
+			// x == x  =>  true
+			// x != x  =>  false
+			// x < x   =>  false
+			// x <= x  =>  true
+			// x > x   =>  false
+			// x >= x  =>  true
+			// x %? x  =>  true
+			// x % x   =>  1
+			// x / x   =>  1
+			// x - x   =>  0
+			case token.Equals, token.NotEquals,
+				token.Less, token.LessEquals, token.Greater, token.GreaterEquals, token.DivisibleBy,
+				token.Mod, token.Slash, token.Minus:
+				c := evalInfixOp(op.Kind, ValInt(1), ValInt(1))
+				program = slices.Replace(program, i, i+2, Program{instPop{}, instConstant{Value: c}}...)
+			case token.And, token.Or:
+				// x && x  => x
+				// x || x  => x
+				program = slices.Delete(program, i, i+2)
+			}
+		}
+		var is instSwap
+		if match2(program[i:], &id, &is) {
+			program = slices.Delete(program, i+1, i+2)
+		}
+	}
+}
+
 func (c *Compiler) passStoreLoad(pp *Program) {
 	// pre:           post:
 	// fn lambda1:    fn lambda1:
@@ -259,45 +333,29 @@ func (c *Compiler) passStoreLoad(pp *Program) {
 
 	// only consider assignments that are loaded once
 	loads := make(map[string]int)
-	for i := 0; i < len(c.program); i++ {
-		if il, ok := c.program[i].(instLoad); ok {
+	for i := 0; i < len(program); i++ {
+		if il, ok := program[i].(instLoad); ok {
 			loads[il.Name]++
-		}
-	}
-	for _, cf := range c.fns {
-		for i := 0; i < len(cf.Body); i++ {
-			if il, ok := cf.Body[i].(instLoad); ok {
-				loads[il.Name]++
-			}
 		}
 	}
 
 outer:
 	for i := 0; i+1 < len(program); i++ {
-		if ia, ok := program[i].(instAssign); ok {
-			if loads[ia.Name] != 1 {
+		if il, ok := program[i].(instLoad); ok {
+			if loads[il.Name] != 1 {
 				continue
 			}
-			// scan forward, tracking stack height
 			var height int
-			// HACK: if assign was preceded by a dup (common after CSE),
-			// we can allow stack accesses to be one deeper
-			dup := 0
-			if i > 0 {
-				if _, ok := program[i-1].(instDup); ok {
-					dup = 1
-				}
-			}
-			for j := i + 1; j < len(program); j++ {
-				if il, ok := program[j].(instLoad); ok && il.Name == ia.Name {
+			for j := i - 1; j >= 0; j-- {
+				if ia, ok := program[j].(instAssign); ok && ia.Name == il.Name {
 					if height == 0 {
 						// delete both the load and the store
-						program = slices.Delete(program, j, j+1)
 						program = slices.Delete(program, i, i+1)
+						program = slices.Delete(program, j, j+1)
 					}
 					continue outer
 				} else {
-					if stackRequired(program[j]) > height+dup {
+					if stackRequired(program[j]) > height {
 						// deleting store+load would change behavior
 						continue outer
 					}
@@ -316,10 +374,12 @@ func (c *Compiler) passDupLoad(pp *Program) {
 	defer func() { *pp = program }()
 
 	for i := 0; i+1 < len(program); i++ {
-		if program[i].String() == program[i+1].String() {
-			switch program[i].(type) {
-			case instLoad:
-				program[i+1] = instDup{}
+		var il1, il2 instLoad
+		if match2(program[i:], &il1, &il2) && il1.Name == il2.Name {
+			i++
+			for match1(program[i:], &il2) && il2.Name == il1.Name {
+				program[i] = instDup{}
+				i++
 			}
 		}
 	}
@@ -342,42 +402,6 @@ func (c *Compiler) passSwapLoad(pp *Program) {
 			program = slices.Replace(program, i, i+4, Program{instSwap{}}...)
 		}
 	}
-}
-
-func (c *Compiler) passDeadCode(pp *Program) {
-	// pre:           post:
-	// JUMP label1    JUMP label1
-	// CONST "yo"     :label1
-	// OUTPUT
-	// :label1
-	program := *pp
-	defer func() { *pp = program }()
-
-outer:
-	for i := 0; i < len(program); i++ {
-		var ic instConstant
-		var ip instPop
-		if match2(program[i:], &ic, &ip) {
-			program = slices.Delete(program, i, i+2)
-		} else if ij, ok := program[i].(instJump); ok {
-			for j := i + 1; j < len(program); j++ {
-				if il, ok := program[j].(instTarget); ok {
-					if ij.Target == il.Name {
-						program = slices.Delete(program, i, j)
-					} else {
-						program = slices.Delete(program, i+1, j)
-					}
-					continue outer
-				}
-			}
-		}
-		var id instDup
-		var is instSwap
-		if match2(program[i:], &id, &is) {
-			program = slices.Delete(program, i, i+2)
-		}
-	}
-
 }
 
 func (c *Compiler) passUnusedLabels(pp *Program) {
@@ -461,24 +485,24 @@ func (c *Compiler) passInline(pp *Program) {
 
 func (c *Compiler) passCSE(pp *Program) {
 	// pre:               post:
-	// LOAD x_0           LOAD x_0
+	// LOAD x             LOAD x
 	// CALL string(_)     CALL string(_)
 	// ADD			      DUP
-	// LOAD x_0           ASSIGN x_1
+	// LOAD x             ASSIGN _cse_var1
 	// CALL string(_)     ADD
-	//                    LOAD x_1
+	//                    LOAD _cse_var1
 
 	program := *pp
 	defer func() { *pp = program }()
 
 	worthIt := func(seq Program) bool {
-		// must have a total stack impact of +1 and contain at least 1 call
+		// must have a total stack impact of +1 and contain at least 1 call or op
 		if stackImpact(seq...) != 1 {
 			return false
 		}
 		for _, in := range seq {
 			switch in.(type) {
-			case instDynamicCall, instStaticCall:
+			case instDynamicCall, instStaticCall, instInfixOp, instPrefixOp:
 				return true
 			}
 		}
@@ -499,11 +523,27 @@ func (c *Compiler) passCSE(pp *Program) {
 				}
 			}
 			if len(matches) > 0 {
-				name := c.newVar("cse")
+				// see if we already have a var for this
+				var name string
+				for j := i + size; j < len(program); j++ {
+					if ia, ok := program[j].(instAssign); ok {
+						name = ia.Name
+						break
+					}
+					if _, ok := program[j].(instDup); !ok {
+						break
+					}
+				}
+				needAssign := name == ""
+				if name == "" {
+					name = c.newVar("cse")
+				}
 				for _, j := range matches {
 					program = slices.Replace(program, j, j+size, Program{instLoad{Name: name}}...)
 				}
-				program = slices.Insert(program, i+size, Program{instDup{}, instAssign{Name: name}}...)
+				if needAssign {
+					program = slices.Insert(program, i+size, Program{instDup{}, instAssign{Name: name}}...)
+				}
 			}
 		}
 	}
@@ -546,7 +586,46 @@ func (c *Compiler) passLoadConstants() {
 	}
 }
 
-func (c *Compiler) passUnusedFunctions() {
+func (c *Compiler) passRenames() {
+	// pre:         post:
+	// LOAD x       LOAD x
+	// ASSIGN y
+	// LOAD y
+
+	fns := []*Program{&c.program}
+	for _, cf := range c.fns {
+		fns = append(fns, &cf.Body)
+	}
+	renames := make(map[string]string)
+	for _, pp := range fns {
+		program := *pp
+		for i := 0; i+1 < len(program); i++ {
+			var il instLoad
+			var ia instAssign
+			if match2(program[i:], &il, &ia) {
+				renames[ia.Name] = il.Name
+				program = append(program[:i], program[i+2:]...)
+				i--
+			}
+		}
+		*pp = program
+	}
+	for _, pp := range fns {
+		program := *pp
+		for i := range program {
+			if il, ok := program[i].(instLoad); ok {
+				if r, ok := renames[il.Name]; ok {
+					il.Name = r
+					program[i] = il
+				}
+			}
+		}
+		*pp = program
+	}
+}
+
+func (c *Compiler) passDeadCode() {
+	// unused functions
 	called := make(map[string]bool)
 	var visit func(v Value)
 	visitProgram := func(p Program) {
@@ -577,6 +656,58 @@ func (c *Compiler) passUnusedFunctions() {
 		if !called[fn] {
 			delete(c.fns, fn)
 		}
+	}
+
+	// unloaded stores
+	unloaded := make(map[string]bool)
+	ps := []*Program{&c.program}
+	for _, fn := range c.fns {
+		ps = append(ps, &fn.Body)
+	}
+	for _, pp := range ps {
+		program := *pp
+		for i := range program {
+			switch in := program[i].(type) {
+			case instAssign:
+				unloaded[in.Name] = true
+			case instLoad:
+				delete(unloaded, in.Name)
+			}
+		}
+	}
+
+	for _, pp := range ps {
+		program := *pp
+		for i := range program {
+			if ia, ok := program[i].(instAssign); ok && unloaded[ia.Name] {
+				program[i] = instPop{}
+			}
+		}
+		*pp = program
+	}
+
+	// intra-function dead code
+	for _, pp := range ps {
+		program := *pp
+
+		for i := 0; i < len(program); i++ {
+			// jumped-over code
+			if ij, ok := program[i].(instJump); ok {
+				for j := i + 1; j < len(program); j++ {
+					if il, ok := program[j].(instTarget); ok {
+						if ij.Target == il.Name {
+							program = slices.Delete(program, i, j)
+						} else {
+							program = slices.Delete(program, i+1, j)
+						}
+						break
+					}
+				}
+				continue
+			}
+		}
+
+		*pp = program
 	}
 }
 
@@ -609,14 +740,15 @@ func (c *Compiler) optimize() {
 		name  string
 		apply func(*Program)
 	}{
+		{"pop", c.passPop},
 		{"fold-constants", c.passFoldConstants},
 		{"unsplat", c.passUnsplat},
 		{"unrep", c.passUnrep},
 		{"static-call", c.passStaticCall},
 		{"store-load", c.passStoreLoad},
+		{"dup-op", c.passDupOp},
 		{"dup-load", c.passDupLoad},
 		{"swap-load", c.passSwapLoad},
-		{"dead-code", c.passDeadCode},
 		{"unused-labels", c.passUnusedLabels},
 		{"inline", c.passInline},
 		{"cse", c.passCSE},
@@ -626,7 +758,8 @@ func (c *Compiler) optimize() {
 		apply func()
 	}{
 		{"load-constants", c.passLoadConstants},
-		{"unused-functions", c.passUnusedFunctions},
+		{"renames", c.passRenames},
+		{"dead-code", c.passDeadCode},
 	}
 	var pass int
 	optimizeFn := func(fn *Program) {

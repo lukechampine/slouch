@@ -101,7 +101,7 @@ func (m ValAssoc) String() string {
 	for i := range m.keys {
 		strs = append(strs, fmt.Sprintf("%v:%v", m.keys[i], m.vals[i]))
 	}
-	return "[" + strings.Join(strs, " ") + "]"
+	return "[" + strings.Join(strs, ", ") + "]"
 }
 
 func (m ValAssoc) get(k Value) Value {
@@ -164,7 +164,7 @@ func (ice *ValIcicle) len() int {
 	return len(ice.vals)
 }
 
-func (ice *ValIcicle) collect() ValArray {
+func (ice *ValIcicle) Collect() ValArray {
 	ice.get(1e18)
 	return ValArray(ice.vals)
 }
@@ -190,7 +190,7 @@ func toIcicle(v Value) *ValIcicle {
 }
 
 func toArray(v Value) ValArray {
-	return toIcicle(v).collect()
+	return toIcicle(v).Collect()
 }
 
 func evalPrefixOp(op token.Kind, a Value) Value {

@@ -2,6 +2,8 @@ package bytecode
 
 import (
 	"fmt"
+	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -93,7 +95,7 @@ func init() {
 			Fn: func(vm *VM, args []Value) Value {
 				fn := args[0].(ValFunc)
 				i := 0
-				for _, v := range toIcicle(args[1]).collect() {
+				for _, v := range toArray(args[1]) {
 					if vm.Call(fn, []Value{v}).(ValBool) {
 						i++
 					}
@@ -136,6 +138,19 @@ func init() {
 			},
 		},
 
+		"ints": makeBuiltinUnary(func(s ValString) ValArray {
+			fs := strings.FieldsFunc(string(s), func(r rune) bool {
+				return !('0' <= r && r <= '9') && r != '-' // 0-9 or -
+			})
+			elems := make(ValArray, 0, len(fs))
+			for _, w := range fs {
+				if i, err := strconv.Atoi(w); err == nil {
+					elems = append(elems, ValInt(int64(i)))
+				}
+			}
+			return elems
+		}),
+
 		"len": {
 			Arity: 1,
 			Fn: func(_ *VM, args []Value) Value {
@@ -162,7 +177,7 @@ func init() {
 			Arity:    1,
 			Comptime: true,
 			Fn: func(_ *VM, args []Value) Value {
-				vals := toIcicle(args[0]).collect()
+				vals := toArray(args[0])
 				m := vals[0]
 				for _, v := range vals[1:] {
 					if internalLess(m, v) {
@@ -185,7 +200,7 @@ func init() {
 			Arity:    1,
 			Comptime: true,
 			Fn: func(_ *VM, args []Value) Value {
-				vals := toIcicle(args[0]).collect()
+				vals := toArray(args[0])
 				if len(vals) == 0 {
 					return ValInt(0)
 				}
@@ -203,27 +218,17 @@ func init() {
 			Fn: func(_ *VM, args []Value) Value {
 				switch v := args[0].(type) {
 				case ValString:
-					rev := make([]byte, len(v))
-					for i := range rev {
-						rev[i] = v[len(v)-i-1]
-					}
+					rev := []byte(v)
+					slices.Reverse(rev)
 					return ValString(rev)
 				case ValArray:
-					rev := make([]Value, len(v))
-					for i := range rev {
-						rev[i] = v[len(v)-i-1]
-					}
-					return ValArray(rev)
+					rev := slices.Clone(v)
+					slices.Reverse(rev)
+					return rev
 				case *ValIcicle:
-					vals := v.collect()
-					return &ValIcicle{
-						next: func(i int) Value {
-							if i >= len(vals) {
-								return nil
-							}
-							return vals[len(vals)-i-1]
-						},
-					}
+					vals := v.Collect()
+					slices.Reverse(vals)
+					return vals
 				default:
 					panic(fmt.Sprintf("invalid argument to len: %v", v))
 				}
@@ -252,5 +257,38 @@ func init() {
 		"toUpper": makeBuiltinUnary(func(s ValString) ValString {
 			return ValString(strings.ToUpper(string(s)))
 		}),
+
+		"tr": {
+			Arity: 2,
+			Fn: func(_ *VM, args []Value) Value {
+				m := args[0].(ValAssoc)
+				if s, ok := args[1].(ValString); ok {
+					str := true
+					for _, v := range m.vals {
+						if _, ok := v.(ValString); !ok {
+							str = false
+							break
+						}
+					}
+					if str {
+						pairs := make([]string, 0, len(m.vals)*2)
+						for _, i := range m.indices {
+							pairs = append(pairs, string(m.keys[i].(ValString)), string(m.vals[i].(ValString)))
+						}
+						return ValString(strings.NewReplacer(pairs...).Replace(string(s)))
+					}
+				}
+				ice := toIcicle(args[1])
+				return &ValIcicle{
+					next: func(i int) Value {
+						v := ice.get(i)
+						if v == nil {
+							return nil
+						}
+						return m.getOr(v, v)
+					},
+				}
+			},
+		},
 	}
 }

@@ -174,10 +174,6 @@ func (c *Compiler) pushScope() func() {
 }
 
 func (c *Compiler) define(name string) {
-	if _, ok := c.vars[name]; ok {
-		c.setErr(fmt.Errorf("variable %s redefined", name))
-		return
-	}
 	c.vars[name] = struct{}{}
 }
 

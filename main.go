@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
@@ -14,126 +13,16 @@ import (
 	"time"
 
 	"github.com/chzyer/readline"
-	"github.com/pkg/profile"
 	"lukechampine.com/slouch/ast"
-	"lukechampine.com/slouch/evaluator"
+	"lukechampine.com/slouch/bytecode"
 	"lukechampine.com/slouch/lexer"
 	"lukechampine.com/slouch/parser"
 )
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "repl" {
-		log.SetFlags(0)
-
-		var input, solution string
-		var day, year, part int
-		var unquote bool
-		eval := evaluator.New()
-		prompt, err := readline.New("slouch> ")
-		if err != nil {
-			log.Fatal(err)
-		}
-		defer prompt.Close()
-		prev := &evalPreview{eval: eval, term: prompt.Terminal}
-		prompt.Config.Listener = prev
-		logf := func(s string, args ...interface{}) {
-			fmt.Fprintf(prompt, "\r"+s, args...)
-		}
-		log := func(args ...interface{}) {
-			fmt.Fprint(prompt, "\r"+fmt.Sprintln(args...))
-		}
-		for {
-			line, err := prompt.Readline()
-			if err == io.EOF {
-				break
-			} else if err != nil {
-				log("Couldn't read input", err)
-				return
-			} else if len(line) == 0 {
-				continue
-			}
-
-			if !strings.HasPrefix(line, ":") {
-				prev.mu.Lock()
-				solution, err = executeOne(eval, input, line, unquote)
-				prev.mu.Unlock()
-				if err != nil {
-					log("Error:", err)
-				} else {
-					log(solution)
-				}
-				continue
-			}
-			args := strings.Fields(line)
-			switch args[0] {
-			case ":reset":
-				eval = evaluator.New()
-				prev.eval = eval
-				log("Reset evaluator")
-
-			case ":setinput":
-				input, err = readFile(args[1])
-				if err != nil {
-					log("Couldn't load input:", err)
-					break
-				}
-				prev.input = input
-				eval = evaluator.New()
-				prev.eval = eval
-
-			case ":load":
-				data, err := ioutil.ReadFile(args[2])
-				if err != nil {
-					log("Couldn't load file:", err)
-					break
-				}
-				eval.Bind(args[1], eval.Eval(ast.String{Value: string(data)}))
-
-			case ":setquote":
-				unquote = false
-				log("Unquote mode on: string values will be escaped before display")
-
-			case ":setunquote":
-				unquote = true
-				log("Unquote mode on: string values will be displayed raw")
-
-			case ":setday":
-				day, _ = strconv.Atoi(args[1])
-				year, _ = strconv.Atoi(args[2])
-				part = 1
-				input, err = fetchInput(day, year)
-				if err != nil {
-					log("Couldn't load input:", err)
-					break
-				}
-				prev.input = input
-				eval = evaluator.New()
-				prev.eval = eval
-				logf("Ready for Dec %v, %v!\n", day, year)
-
-			case ":run":
-				prog, err := ioutil.ReadFile(args[1])
-				if err != nil {
-					log("Couldn't load program:", err)
-					break
-				}
-				if err := execute(eval, input, string(prog), prompt.Terminal, unquote); err != nil {
-					log("Error:", err)
-				}
-
-			case ":submit":
-				if solution == "" {
-					solution = args[1]
-				}
-				logf("Submitting %v for part %v...\n", solution, part)
-				log(postSolution(year, day, part, solution))
-				part++
-				solution = ""
-
-			default:
-				log("Unrecognized command")
-			}
-		}
+	log.SetFlags(0)
+	if len(os.Args) == 2 && os.Args[1] == "repl" {
+		runRepl()
 		return
 	}
 
@@ -150,58 +39,202 @@ func main() {
 	}
 	p := parser.Parse(lexer.Tokenize(prog))
 	start := time.Now()
-	err = evaluator.New().Run(p, input, func(v evaluator.Value) {
-		if s, ok := v.(*evaluator.StringValue); ok {
-			raw, _ := strconv.Unquote(s.String()) // hack
-			fmt.Println(raw)
-		} else {
-			fmt.Println(v)
-		}
-	})
+
+	c := bytecode.NewCompiler()
+	program, err := c.Compile(p)
+	if err != nil {
+		log.Fatalln("couldn't compile program:", err)
+	}
+	err = bytecode.NewVM(func(v bytecode.Value) {
+		fmt.Println(renderValue(v, true))
+	}).Run(program, input)
 	if err != nil {
 		panic(err)
 	}
 	fmt.Println("\nFinished in", time.Since(start))
 }
 
-func execute(eval *evaluator.Environment, input, prog string, w io.Writer, unquote bool) (err error) {
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				err = fmt.Errorf("%v", r)
-			}
-		}()
-		p := parser.Parse(lexer.Tokenize(prog))
-		err = eval.Run(p, input, func(v evaluator.Value) {
-			if s, ok := v.(*evaluator.StringValue); ok && unquote {
-				raw, _ := strconv.Unquote(s.String())
-				fmt.Fprintln(w, "\r"+raw)
+func runRepl() {
+	var input, solution string
+	var day, year, part int
+	var unquote bool
+	prompt, err := readline.New("slouch> ")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer prompt.Close()
+	prev := &evalPreview{
+		prog:  &ast.Program{},
+		input: input,
+		term:  prompt.Terminal,
+	}
+	prompt.Config.Listener = prev
+	logf := func(s string, args ...any) {
+		fmt.Fprintf(prompt, "\r"+s, args...)
+	}
+	log := func(args ...any) {
+		fmt.Fprint(prompt, "\r"+fmt.Sprintln(args...))
+	}
+	for {
+		line, err := prompt.Readline()
+		if err == io.EOF {
+			break
+		} else if err != nil {
+			log("Couldn't read input", err)
+			return
+		} else if len(line) == 0 {
+			continue
+		}
+
+		if !strings.HasPrefix(line, ":") {
+			prev.mu.Lock()
+			solution, err = executeOne(prev.prog, input, line, unquote)
+			prev.mu.Unlock()
+			if err != nil {
+				log("Error:", err)
 			} else {
-				fmt.Fprintln(w, "\r"+v.String())
+				log(solution)
+				// remember assignments
+				for _, stmt := range parser.Parse(lexer.Tokenize(line)).Stmts {
+					if as, ok := stmt.(ast.AssignStmt); ok {
+						prev.prog.Stmts = append(prev.prog.Stmts, as)
+					}
+				}
 			}
-		})
+			continue
+		}
+		args := strings.Fields(line)
+		switch args[0] {
+		case ":reset":
+			prev.prog = &ast.Program{}
+			log("Reset evaluator")
+
+		case ":setinput":
+			input, err = readFile(args[1])
+			if err != nil {
+				log("Couldn't load input:", err)
+				break
+			}
+			prev.input = input
+			prev.prog = &ast.Program{}
+
+		case ":load":
+			data, err := os.ReadFile(args[2])
+			if err != nil {
+				log("Couldn't load file:", err)
+				break
+			}
+			prev.prog.Stmts = append(prev.prog.Stmts, ast.AssignStmt{
+				Name: ast.Ident{Name: args[1]},
+				X:    ast.String{Value: string(data)},
+			})
+
+		case ":setquote":
+			unquote = false
+			log("Unquote mode on: string values will be escaped before display")
+
+		case ":setunquote":
+			unquote = true
+			log("Unquote mode on: string values will be displayed raw")
+
+		case ":setday":
+			day, _ = strconv.Atoi(args[1])
+			year, _ = strconv.Atoi(args[2])
+			part = 1
+			input, err = fetchInput(day, year)
+			if err != nil {
+				log("Couldn't load input:", err)
+				break
+			}
+			prev.input = input
+			prev.prog = &ast.Program{}
+			logf("Ready for Dec %v, %v!\n", day, year)
+
+		case ":run":
+			prog, err := os.ReadFile(args[1])
+			if err != nil {
+				log("Couldn't load program:", err)
+				break
+			}
+			if err := execute(prev.prog, input, string(prog), prompt.Terminal, unquote); err != nil {
+				log("Error:", err)
+			}
+
+		case ":submit":
+			if solution == "" {
+				solution = args[1]
+			}
+			logf("Submitting %v for part %v...\n", solution, part)
+			log(postSolution(year, day, part, solution))
+			part++
+			solution = ""
+
+		case ":disasm":
+			p := parser.Parse(lexer.Tokenize(strings.TrimPrefix(line, ":disasm ")))
+			p.Stmts = append(prev.prog.Stmts[:len(prev.prog.Stmts):len(prev.prog.Stmts)], p.Stmts...)
+			log(p.String())
+			program, err := bytecode.NewCompiler().Compile(p)
+			if err != nil {
+				log("Error:", err)
+			} else {
+				log(program.String())
+			}
+
+		default:
+			log("Unrecognized command")
+		}
+	}
+}
+
+func renderValue(v bytecode.Value, unquote bool) string {
+	switch v := v.(type) {
+	case bytecode.ValString:
+		if unquote {
+			s, _ := strconv.Unquote(v.String())
+			return s
+		} else {
+			return v.String()
+		}
+	case *bytecode.ValIcicle:
+		return v.Collect().String()
+	default:
+		return v.String()
+	}
+}
+
+func execute(pp *ast.Program, input, prog string, w io.Writer, unquote bool) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("%v", r)
+		}
 	}()
+	p := parser.Parse(lexer.Tokenize(prog))
+	p.Stmts = append(pp.Stmts[:len(pp.Stmts):len(pp.Stmts)], p.Stmts...)
+	var program bytecode.Program
+	program, err = bytecode.NewCompiler().Compile(p)
+	if err != nil {
+		return
+	}
+	err = bytecode.NewVM(func(v bytecode.Value) {
+		fmt.Fprint(w, "\r"+renderValue(v, unquote))
+	}).Run(program, input)
 	return
 }
 
-func executeOne(eval *evaluator.Environment, input, prog string, unquote bool) (output string, err error) {
+func executeOne(pp *ast.Program, input, prog string, unquote bool) (output string, err error) {
 	var buf bytes.Buffer
-	err = execute(eval, input, prog, &buf, unquote)
+	err = execute(pp, input, prog, &buf, unquote)
 	output = strings.TrimSpace(buf.String())
 	return
 }
 
-var closingChar = map[rune]rune{
-	'(': ')', '{': '}', '[': ']',
-	')': '(', '}': '{', ']': '[',
-}
-
 type evalPreview struct {
-	eval       *evaluator.Environment
+	prog       *ast.Program
 	term       *readline.Terminal
 	input      string
 	lastProg   string
 	lastOutput string
+	disasm     bool
 	mu         sync.Mutex
 }
 
@@ -211,7 +244,10 @@ func (p *evalPreview) OnChange(line []rune, pos int, key rune) (newLine []rune, 
 	if strings.HasPrefix(string(line), ":") {
 		return
 	}
+
 	switch key {
+	case readline.CharNext:
+		p.disasm = !p.disasm
 	case '(', '{', '[':
 		// paren/brace matching
 		if pos == len(line) || line[pos] == ' ' {
@@ -224,45 +260,46 @@ func (p *evalPreview) OnChange(line []rune, pos int, key rune) (newLine []rune, 
 		if 0 < pos && pos < len(line) && line[pos-1] == key && line[pos] == key {
 			return append(line[:pos-1], line[pos:]...), pos, true
 		}
-		// case readline.CharBackspace, readline.CharDelete:
-		// 	// delete matching paren/brace
-		// 	if pos < len(line) && pos < len(p.lastProg) {
-		// 		switch c := p.lastProg[pos]; c {
-		// 		case '(', '{', '[':
-		// 			closer := map[byte]rune{'(': ')', '{': '}', '[': ']'}[c]
-		// 			if line[pos] == closer {
-		// 				line = append(line[:pos], line[pos+1:]...)
-		// 				return line, pos, true
-		// 			}
-		// 		}
-		// 	}
 	}
 
 	prog := strings.TrimRight(string(line), "| ")
-	if prog != p.lastProg {
-		output, err := executeOne(p.eval.Clone(), p.input, prog, false)
-		if err != nil {
-			if !strings.HasSuffix(string(line), " ") && strings.Contains(err.Error(), "identifier") {
-				return
+	if prog != p.lastProg || key == readline.CharNext {
+		if p.disasm {
+			dis := parser.Parse(lexer.Tokenize(prog))
+			dis.Stmts = append(p.prog.Stmts[:len(p.prog.Stmts):len(p.prog.Stmts)], dis.Stmts...)
+			program, err := bytecode.NewCompiler().Compile(dis)
+			if err != nil {
+				p.lastOutput = fmt.Sprintf("Error: %v", err)
+			} else {
+				p.lastOutput = program.String()
 			}
-			output = fmt.Sprintf("Error: %v", err)
+			p.lastProg = prog
+		} else {
+			output, err := executeOne(p.prog, p.input, prog, false)
+			if err != nil {
+				if !strings.HasSuffix(string(line), " ") && strings.Contains(err.Error(), "identifier") {
+					return
+				}
+				output = fmt.Sprintf("Error: %v", err)
+			}
+			w := p.term.GetConfig().FuncGetWidth()
+			if len(output) > w {
+				output = output[:w-20] + "..." + output[len(output)-15:]
+			}
+			p.lastProg = prog
+			p.lastOutput = output
 		}
-		w := p.term.GetConfig().FuncGetWidth()
-		if len(output) > w {
-			output = output[:w-20] + "..." + output[len(output)-15:]
-		}
-		p.lastProg = prog
-		p.lastOutput = output
 	}
-	fmt.Fprintf(p.term, "\n%v", p.lastOutput)                   // write output on next line
-	fmt.Fprintf(p.term, "\033[1F\033[%dC", len("slouch> ")+pos) // restore cursor
+
+	rows := strings.Count(p.lastOutput, "\n") + 1
+	fmt.Fprintf(p.term, "\n%v\033[%dF\033[%dC", p.lastOutput, rows, len("slouch> ")+pos)
 	return
 }
 
 func getToken() string {
 	token := os.Getenv("AOC_TOKEN")
 	if token == "" {
-		data, err := ioutil.ReadFile("token.txt")
+		data, err := os.ReadFile("token.txt")
 		if err != nil {
 			log.Fatal("Token not found! Please set AOC_TOKEN or put it in token.txt.")
 		}
@@ -281,16 +318,11 @@ func doReq(req *http.Request) []byte {
 		log.Fatal(err)
 	}
 	defer resp.Body.Close()
-	data, err := ioutil.ReadAll(resp.Body)
+	data, err := io.ReadAll(resp.Body)
 	if err != nil {
 		log.Fatal(err)
 	}
 	return data
-}
-
-func getPuzzle(year, day int) string {
-	req, _ := http.NewRequest(http.MethodGet, fmt.Sprintf("https://adventofcode.com/%v/day/%v", year, day), nil)
-	return string(doReq(req))
 }
 
 func getInput(year, day int) []byte {
@@ -302,10 +334,8 @@ func postSolution(year, day, part int, answer string) string {
 	body := strings.NewReader(fmt.Sprintf("level=%v&answer=%v", part, answer))
 	req, _ := http.NewRequest(http.MethodPost, fmt.Sprintf("https://adventofcode.com/%v/day/%v/answer", year, day), body)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	return extractMain(string(doReq(req)))
-}
 
-func extractMain(resp string) string {
+	resp := string(doReq(req))
 	i := strings.Index(resp, "<main>")
 	if i == -1 {
 		return resp
@@ -317,7 +347,7 @@ func extractMain(resp string) string {
 }
 
 func readFile(filename string) (string, error) {
-	bytes, err := ioutil.ReadFile(filename)
+	bytes, err := os.ReadFile(filename)
 	return strings.TrimRight(string(bytes), " \t\n"), err
 }
 
@@ -333,7 +363,7 @@ func fetchInput(day, year int) (string, error) {
 			time.Sleep(time.Until(t) + 3*time.Second) // don't want to fire too early
 		}
 		log.Println("Downloading input...")
-		if err := ioutil.WriteFile(filename, getInput(year, day), 0660); err != nil {
+		if err := os.WriteFile(filename, getInput(year, day), 0660); err != nil {
 			log.Fatal(err)
 		}
 	}

@@ -67,7 +67,7 @@ func (vm *VM) call(fn ValFunc, n int) error {
 		if n != 1 {
 			return fmt.Errorf("splatted functions expect 1 argument, got %v", n)
 		}
-		a := toIcicle(vm.pop()).collect()
+		a := toArray(vm.pop())
 		fn.Applied = append(fn.Applied, a...)
 	case token.Rep:
 		if n != 1 {
@@ -234,8 +234,9 @@ func (vm *VM) Call(fn ValFunc, args []Value) Value {
 	}
 }
 
-func NewVM() *VM {
-	return &VM{
-		output: func(Value) {},
+func NewVM(output func(Value)) *VM {
+	if output == nil {
+		output = func(v Value) {}
 	}
+	return &VM{output: output}
 }
