@@ -239,6 +239,19 @@ func init() {
 			return ValString(v.String())
 		}),
 
+		"sum": {
+			Arity:    1,
+			Comptime: true,
+			Fn: func(_ *VM, args []Value) Value {
+				vals := toArray(args[0])
+				sum := ValInt(0)
+				for _, v := range vals {
+					sum += v.(ValInt)
+				}
+				return sum
+			},
+		},
+
 		"tail": {
 			Arity:    1,
 			Comptime: true,

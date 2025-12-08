@@ -292,6 +292,11 @@ func evalInfixOp(op token.Kind, a, b Value) Value {
 			case ValInt:
 				return ValString(a[b : b+1])
 			}
+		case *ValIcicle:
+			switch b := b.(type) {
+			case ValInt:
+				return a.get(int(b))
+			}
 		case ValAssoc:
 			v := a.get(b)
 			if v == nil {

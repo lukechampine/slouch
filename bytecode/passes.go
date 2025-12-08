@@ -54,6 +54,46 @@ func stackImpact(is ...Instruction) (total int) {
 	return
 }
 
+func stackNeutral(p Program) bool {
+	var height int
+	for _, in := range p {
+		switch in.(type) {
+		case instJump, instJumpEq, instTarget, instFuncDef, instReturn:
+			return false
+		}
+		if stackRequired(in) > height {
+			return false
+		}
+		height += stackImpact(in)
+	}
+	return height == 0
+}
+
+func startOfValue(p Program) (int, bool) {
+	// seek backwards until we reach neutral stack; abort if we encounter
+	// anything funky
+
+	height := -1
+	for i := len(p) - 1; i >= 0; i-- {
+		switch p[i].(type) {
+		case instJump, instJumpEq, instTarget, instFuncDef, instReturn:
+			return 0, false
+		}
+		height += stackImpact(p[i])
+		if height == 0 {
+			// seek forward to verify stack requirement
+			for _, in := range p[i:] {
+				if stackRequired(in) > height {
+					return 0, false
+				}
+				height += stackImpact(in)
+			}
+			return i, true
+		}
+	}
+	return 0, false
+}
+
 func match1[A Instruction](p Program, a *A) bool {
 	if len(p) > 0 {
 		if ia, ok := p[0].(A); ok {
@@ -80,29 +120,10 @@ func (c *Compiler) passPop(pp *Program) {
 	program := *pp
 	defer func() { *pp = program }()
 
-outer:
-	for i := 0; i < len(program); i++ {
-		if _, ok := program[i].(instPop); ok {
-			// seek backwards until stack is balanced
-			height := -1
-			for j := i - 1; j >= 0; j-- {
-				switch program[j].(type) {
-				case instJump, instJumpEq, instTarget, instFuncDef, instReturn:
-					continue outer
-				}
-				height += stackImpact(program[j])
-				if height == 0 {
-					// check stack requirement for this sequence
-					h := 0
-					for _, in := range program[j : i+1] {
-						if stackRequired(in) > h {
-							continue outer
-						}
-						h += stackImpact(in)
-					}
-					program = slices.Delete(program, j, i+1)
-					break
-				}
+	for j := 0; j < len(program); j++ {
+		if _, ok := program[j].(instPop); ok {
+			if i, ok := startOfValue(program[:j]); ok {
+				program = slices.Delete(program, i, j+1)
 			}
 		}
 	}
@@ -291,24 +312,19 @@ func (c *Compiler) passDupOp(pp *Program) {
 		var op instInfixOp
 		if match2(program[i:], &id, &op) {
 			switch op.Kind {
-			// x == x  =>  true
-			// x != x  =>  false
-			// x < x   =>  false
-			// x <= x  =>  true
-			// x > x   =>  false
-			// x >= x  =>  true
-			// x %? x  =>  true
-			// x % x   =>  1
-			// x / x   =>  1
-			// x - x   =>  0
-			case token.Equals, token.NotEquals,
-				token.Less, token.LessEquals, token.Greater, token.GreaterEquals, token.DivisibleBy,
-				token.Mod, token.Slash, token.Minus:
+			case token.Equals, //       true
+				token.NotEquals,     // false
+				token.Less,          // false
+				token.LessEquals,    // true
+				token.Greater,       // false
+				token.GreaterEquals, // true
+				token.DivisibleBy,   // true
+				token.Mod,           // 1
+				token.Slash,         // 1
+				token.Minus:         // 0
 				c := evalInfixOp(op.Kind, ValInt(1), ValInt(1))
 				program = slices.Replace(program, i, i+2, Program{instPop{}, instConstant{Value: c}}...)
 			case token.And, token.Or:
-				// x && x  => x
-				// x || x  => x
 				program = slices.Delete(program, i, i+2)
 			}
 		}
@@ -331,35 +347,34 @@ func (c *Compiler) passStoreLoad(pp *Program) {
 	program := *pp
 	defer func() { *pp = program }()
 
-	// only consider assignments that are loaded once
-	loads := make(map[string]int)
-	for i := 0; i < len(program); i++ {
-		if il, ok := program[i].(instLoad); ok {
-			loads[il.Name]++
-		}
-	}
-
-outer:
 	for i := 0; i+1 < len(program); i++ {
-		if il, ok := program[i].(instLoad); ok {
-			if loads[il.Name] != 1 {
-				continue
-			}
-			var height int
-			for j := i - 1; j >= 0; j-- {
-				if ia, ok := program[j].(instAssign); ok && ia.Name == il.Name {
-					if height == 0 {
-						// delete both the load and the store
-						program = slices.Delete(program, i, i+1)
+		if ia, ok := program[i].(instAssign); ok {
+			for j := i + 1; j < len(program); j++ {
+				if il, ok := program[j].(instLoad); ok && il.Name == ia.Name {
+					if slices.ContainsFunc(program[i+1:j], func(in Instruction) bool {
+						// ensure this was the most recent store
+						ia2, ok := in.(instAssign)
+						return ok && ia2.Name == ia.Name
+					}) || slices.ContainsFunc(program[j+1:], func(in Instruction) bool {
+						// ensure there are no subsequent loads
+						il2, ok := in.(instLoad)
+						return ok && il2.Name == ia.Name
+					}) {
+						break
+					}
+
+					// if stack impact between store->load is zero, we can eliminate both
+					if stackNeutral(program[i+1 : j]) {
 						program = slices.Delete(program, j, j+1)
+						program = slices.Delete(program, i, i+1)
+						break
 					}
-					continue outer
-				} else {
-					if stackRequired(program[j]) > height {
-						// deleting store+load would change behavior
-						continue outer
+					// otherwise, see if we can inline the code creating the stored value
+					if k, ok := startOfValue(program[:i]); ok {
+						program = slices.Replace(program, j, j+1, program[k:i]...)
+						program = slices.Delete(program, k, i+1)
+						break
 					}
-					height += stackImpact(program[j])
 				}
 			}
 		}
@@ -497,7 +512,7 @@ func (c *Compiler) passCSE(pp *Program) {
 
 	worthIt := func(seq Program) bool {
 		// must have a total stack impact of +1 and contain at least 1 call or op
-		if stackImpact(seq...) != 1 {
+		if i, ok := startOfValue(seq); !ok || i != 0 {
 			return false
 		}
 		for _, in := range seq {
