@@ -27,6 +27,7 @@ var opNameTab = map[token.Kind]string{
 	token.LessEquals:    "LTE",
 	token.DivisibleBy:   "DIVISIBLE_BY",
 	token.Dot:           "DOT",
+	token.Mod:           "MODULO",
 }
 
 type Instruction interface {
@@ -193,7 +194,20 @@ func isHole(n ast.Node) bool {
 	return ok || n == nil
 }
 
-func containsShallowHoles(e ast.Expr) bool {
+func (c *Compiler) isPartialFunc(n ast.Node) bool {
+	if id, ok := n.(ast.Ident); ok {
+		if _, ok := c.fns[id.Name]; ok {
+			return true
+		} else if _, ok := builtins[id.Name]; ok {
+			return true
+		} else {
+			c.setErr(fmt.Errorf("undefined: %v", id.Name))
+		}
+	}
+	return false
+}
+
+func (c *Compiler) containsShallowHoles(e ast.Expr) bool {
 	isShallow := true
 	hasHoles := false
 	ast.Visit(e, func(n ast.Node) bool {
@@ -268,7 +282,7 @@ func (c *Compiler) pushExpr(e ast.Expr) {
 	if c.err != nil {
 		return
 	}
-	if containsShallowHoles(e) {
+	if c.containsShallowHoles(e) {
 		c.emitHoleLambda(e)
 		return
 	}
@@ -400,6 +414,7 @@ func (c *Compiler) Compile(p ast.Program) (Program, error) {
 			c.emit(instOutput{})
 		}
 	}
+	c.emit(instReturn{})
 	if c.err != nil {
 		return nil, c.err
 	}

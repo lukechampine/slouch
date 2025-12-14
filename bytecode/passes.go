@@ -159,6 +159,7 @@ func (c *Compiler) passFoldConstants(pp *Program) {
 			}
 			program[i] = instConstant{Value: fn(args)}
 			program = append(program[:i-n], program[i:]...)
+			i -= n
 		}
 
 		if !constArgs(1) {
@@ -347,8 +348,24 @@ func (c *Compiler) passStoreLoad(pp *Program) {
 	program := *pp
 	defer func() { *pp = program }()
 
+	// check for any functions that close over assigned vars
+	closed := make(map[string]bool)
+	for _, fn := range c.fns {
+		defined := make(map[string]bool)
+		for i := range fn.Body {
+			switch in := fn.Body[i].(type) {
+			case instAssign:
+				defined[in.Name] = true
+			case instLoad:
+				if !defined[in.Name] {
+					closed[in.Name] = true
+				}
+			}
+		}
+	}
+
 	for i := 0; i+1 < len(program); i++ {
-		if ia, ok := program[i].(instAssign); ok {
+		if ia, ok := program[i].(instAssign); ok && !closed[ia.Name] {
 			for j := i + 1; j < len(program); j++ {
 				if il, ok := program[j].(instLoad); ok && il.Name == ia.Name {
 					if slices.ContainsFunc(program[i+1:j], func(in Instruction) bool {
@@ -587,7 +604,7 @@ func (c *Compiler) passCSE(pp *Program) {
 				if name == "" {
 					name = c.newVar("cse")
 				}
-				for _, j := range matches {
+				for _, j := range slices.Backward(matches) {
 					program = slices.Replace(program, j, j+size, Program{instLoad{Name: name}}...)
 				}
 				if needAssign {

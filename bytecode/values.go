@@ -29,7 +29,10 @@ type ValFunc struct {
 func (v ValFunc) Need() int {
 	switch v.Mod {
 	case token.Splat, token.Rep:
-		return min(1, v.Arity-len(v.Applied))
+		if len(v.Applied) == 0 {
+			return 1
+		}
+		return 0
 	default:
 		return v.Arity - len(v.Applied)
 	}
@@ -142,10 +145,8 @@ type ValIcicle struct {
 	next func(i int) Value
 }
 
-func (*ValIcicle) isValue() {}
-func (ice *ValIcicle) String() string {
-	return fmt.Sprintf("<icicle, len %v>", ice.len())
-}
+func (*ValIcicle) isValue()           {}
+func (ice *ValIcicle) String() string { return "<icicle>" }
 
 func (ice *ValIcicle) get(i int) Value {
 	for ice.len() <= i {
@@ -207,49 +208,65 @@ func evalPrefixOp(op token.Kind, a Value) Value {
 func evalInfixOp(op token.Kind, a, b Value) Value {
 	switch op {
 	case token.Plus:
-		switch a.(type) {
+		switch a := a.(type) {
 		case ValInt:
-			return ValInt(a.(ValInt) + b.(ValInt))
+			if b, ok := b.(ValInt); ok {
+				return ValInt(a + b)
+			}
 		case ValString:
-			return ValString(a.(ValString) + b.(ValString))
-		default:
-			panic("+: unhandled operand types")
+			if b, ok := b.(ValString); ok {
+				return ValString(a + b)
+			}
 		}
+		panic(fmt.Sprintf("%v + %v: unhandled operand types", a, b))
 	case token.Minus:
-		switch a.(type) {
+		switch a := a.(type) {
 		case ValInt:
-			return ValInt(a.(ValInt) - b.(ValInt))
-		default:
-			panic("-: unhandled operand types")
+			if b, ok := b.(ValInt); ok {
+				return ValInt(a - b)
+			}
 		}
+		panic(fmt.Sprintf("%v - %v: unhandled operand types", a, b))
 	case token.Star:
-		switch a.(type) {
+		switch a := a.(type) {
 		case ValInt:
-			return ValInt(a.(ValInt) * b.(ValInt))
-		default:
-			panic("*: unhandled operand types")
+			if b, ok := b.(ValInt); ok {
+				return ValInt(a * b)
+			}
 		}
+		panic(fmt.Sprintf("%v * %v: unhandled operand types", a, b))
 	case token.Slash:
-		switch a.(type) {
+		switch a := a.(type) {
 		case ValInt:
-			return ValInt(a.(ValInt) / b.(ValInt))
-		default:
-			panic("/: unhandled operand types")
+			if b, ok := b.(ValInt); ok {
+				return ValInt(a / b)
+			}
 		}
+		panic(fmt.Sprintf("%v / %v: unhandled operand types", a, b))
+	case token.Mod:
+		switch a := a.(type) {
+		case ValInt:
+			if b, ok := b.(ValInt); ok {
+				return ValInt(a % b)
+			}
+		}
+		panic(fmt.Sprintf("%v %% %v: unhandled operand types", a, b))
 	case token.And:
-		switch a.(type) {
+		switch a := a.(type) {
 		case ValBool:
-			return ValBool(a.(ValBool) && b.(ValBool))
-		default:
-			panic("and: unhandled operand types")
+			if b, ok := b.(ValBool); ok {
+				return ValBool(a && b)
+			}
 		}
+		panic(fmt.Sprintf("%v and %v: unhandled operand types", a, b))
 	case token.Or:
-		switch a.(type) {
+		switch a := a.(type) {
 		case ValBool:
-			return ValBool(a.(ValBool) || b.(ValBool))
-		default:
-			panic("or: unhandled operand types")
+			if b, ok := b.(ValBool); ok {
+				return ValBool(a || b)
+			}
 		}
+		panic(fmt.Sprintf("%v or %v: unhandled operand types", a, b))
 	case token.Equals:
 		switch a := a.(type) {
 		case ValArray:
@@ -278,7 +295,7 @@ func evalInfixOp(op token.Kind, a, b Value) Value {
 		case ValBool, ValInt, ValString:
 			return ValBool(a == b)
 		default:
-			panic("==: unhandled operand types")
+			panic(fmt.Sprintf("%v == %v: unhandled operand types", a, b))
 		}
 	case token.NotEquals:
 		return !evalInfixOp(token.Equals, a, b).(ValBool)
@@ -307,7 +324,7 @@ func evalInfixOp(op token.Kind, a, b Value) Value {
 			}
 			return v
 		}
-		panic(fmt.Sprintf("unhandled type combination %T . %T", a, b))
+		panic(fmt.Sprintf("%v . %v: unhandled operand types", a, b))
 	case token.Greater:
 		return ValBool(internalLess(b, a))
 	case token.Less:
@@ -317,12 +334,13 @@ func evalInfixOp(op token.Kind, a, b Value) Value {
 	case token.LessEquals:
 		return ValBool(!internalLess(b, a))
 	case token.DivisibleBy:
-		switch a.(type) {
+		switch a := a.(type) {
 		case ValInt:
-			return ValBool(a.(ValInt)%b.(ValInt) == 0)
-		default:
-			panic("%?: unhandled operand types")
+			if b, ok := b.(ValInt); ok {
+				return ValBool(a%b == 0)
+			}
 		}
+		panic(fmt.Sprintf("%v %%? %v: unhandled operand types", a, b))
 	default:
 		panic(fmt.Sprintf("unhandled infix operator %v", op))
 	}

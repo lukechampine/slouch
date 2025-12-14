@@ -34,51 +34,52 @@ func (vm *VM) pop() Value {
 	return v
 }
 
-func (vm *VM) pushCallStack(ip int) {
-	frame := &vm.callStack[len(vm.callStack)-1]
-	vars := make(map[string]Value, len(frame.vars))
-	maps.Copy(vars, frame.vars)
-	vm.callStack = append(vm.callStack, stackFrame{
-		vars: vars,
-		ip:   ip,
-	})
+func (vm *VM) popN(n int) (vs []Value) {
+	for range n {
+		vs = append(vs, vm.pop())
+	}
+	return vs
 }
 
-func (vm *VM) popCallStack() {
-	vm.callStack = vm.callStack[:len(vm.callStack)-1]
+func (vm *VM) newStackFrame(ip int) stackFrame {
+	frame := stackFrame{ip: ip}
+	if len(vm.callStack) == 0 {
+		frame.vars = make(map[string]Value)
+	} else {
+		parent := &vm.callStack[len(vm.callStack)-1]
+		frame.vars = make(map[string]Value, len(parent.vars))
+		maps.Copy(frame.vars, parent.vars)
+	}
+	return frame
 }
 
-func (vm *VM) jump(target string) {
-	frame := &vm.callStack[len(vm.callStack)-1]
-	var ok bool
-	frame.ip, ok = vm.jmpTab[target]
+func (vm *VM) jump(target string) int {
+	ip, ok := vm.jmpTab[target]
 	if !ok {
 		panic(fmt.Sprintf("undefined label %v", target))
 	}
+	return ip
 }
 
-func (vm *VM) call(fn ValFunc, n int) error {
+func (vm *VM) call(fn ValFunc, args []Value) error {
 	switch fn.Mod {
-	default:
-		for range n {
-			fn.Applied = append(fn.Applied, vm.pop())
-		}
 	case token.Splat:
-		if n != 1 {
-			return fmt.Errorf("splatted functions expect 1 argument, got %v", n)
+		if len(args) != 1 {
+			return fmt.Errorf("splatted functions expect 1 argument, got %v", len(args))
 		}
-		a := toArray(vm.pop())
-		fn.Applied = append(fn.Applied, a...)
+		args = toArray(args[0])
 	case token.Rep:
-		if n != 1 {
-			return fmt.Errorf("repped functions expect 1 argument, got %v", n)
+		if len(args) != 1 {
+			return fmt.Errorf("repped functions expect 1 argument, got %v", len(args))
 		}
-		arg := vm.pop()
-		for len(fn.Applied) < fn.Arity {
-			fn.Applied = append(fn.Applied, arg)
+		arg := args[0]
+		args = make([]Value, fn.Arity)
+		for i := range args {
+			args[i] = arg
 		}
 	}
 
+	fn.Applied = append(fn.Applied, args...)
 	if len(fn.Applied) < fn.Arity {
 		// partial application
 		// TODO: should this reset fn.Mod?
@@ -96,7 +97,7 @@ func (vm *VM) call(fn ValFunc, n int) error {
 		for i := len(fn.Applied) - 1; i >= 0; i-- {
 			vm.push(fn.Applied[i])
 		}
-		vm.pushCallStack(t)
+		vm.runFrame(vm.newStackFrame(t))
 	} else if bf, ok := builtins[fn.Name]; ok {
 		vm.push(bf.Fn(vm, fn.Applied))
 	} else {
@@ -105,80 +106,83 @@ func (vm *VM) call(fn ValFunc, n int) error {
 	return nil
 }
 
-func (vm *VM) executeInstruction() error {
-	frame := &vm.callStack[len(vm.callStack)-1]
-	i := vm.program[frame.ip]
-	frame.ip++
-
-	switch i := i.(type) {
-	case instConstant:
-		vm.push(i.Value)
-	case instArray:
-		elems := append([]Value(nil), vm.stack[len(vm.stack)-i.Len:]...)
-		slices.Reverse(elems)
-		vm.stack = vm.stack[:len(vm.stack)-len(elems)]
-		vm.push(ValArray(elems))
-	case instAssoc:
-		elems := append([]Value(nil), vm.stack[len(vm.stack)-i.Len*2:]...)
-		slices.Reverse(elems)
-		vm.stack = vm.stack[:len(vm.stack)-len(elems)]
-		vm.push(makeAssoc(elems))
-	case instAssign:
-		frame.vars[i.Name] = vm.pop()
-	case instLoad:
-		v, ok := frame.vars[i.Name]
-		if !ok {
-			panic(fmt.Sprintf("undefined variable %v", i.Name))
+func (vm *VM) runFrame(frame stackFrame) error {
+	depth := len(vm.callStack)
+	vm.callStack = append(vm.callStack, frame)
+	for len(vm.callStack) > depth {
+		i := vm.program[frame.ip]
+		frame.ip++
+		switch i := i.(type) {
+		case instConstant:
+			vm.push(i.Value)
+		case instArray:
+			elems := append([]Value(nil), vm.stack[len(vm.stack)-i.Len:]...)
+			slices.Reverse(elems)
+			vm.stack = vm.stack[:len(vm.stack)-len(elems)]
+			vm.push(ValArray(elems))
+		case instAssoc:
+			elems := append([]Value(nil), vm.stack[len(vm.stack)-i.Len*2:]...)
+			slices.Reverse(elems)
+			vm.stack = vm.stack[:len(vm.stack)-len(elems)]
+			vm.push(makeAssoc(elems))
+		case instAssign:
+			frame.vars[i.Name] = vm.pop()
+		case instLoad:
+			v, ok := frame.vars[i.Name]
+			if !ok {
+				panic(fmt.Sprintf("undefined variable %v", i.Name))
+			}
+			vm.push(v)
+		case instPrefixOp:
+			vm.push(evalPrefixOp(i.Kind, vm.pop()))
+		case instInfixOp:
+			vm.push(evalInfixOp(i.Kind, vm.pop(), vm.pop()))
+		case instOutput:
+			vm.output(vm.pop())
+		case instDup:
+			vm.push(vm.stack[len(vm.stack)-1])
+		case instPop:
+			vm.pop()
+		case instSwap:
+			a := vm.pop()
+			b := vm.pop()
+			vm.push(a)
+			vm.push(b)
+		case instJump:
+			frame.ip = vm.jump(i.Target)
+		case instJumpEq:
+			if vm.pop() == i.Value {
+				frame.ip = vm.jump(i.Target)
+			}
+		case instTarget, instFuncDef:
+			// no-op
+		case instDynamicCall:
+			v := vm.pop()
+			if fn, ok := v.(ValFunc); !ok {
+				return fmt.Errorf("cannot call non-function value: %v", v)
+			} else if err := vm.call(fn, vm.popN(i.Arity)); err != nil {
+				return err
+			}
+		case instStaticCall:
+			if err := vm.call(i.Func, vm.popN(i.Func.Need())); err != nil {
+				return err
+			}
+		case instReturn:
+			vm.callStack = vm.callStack[:len(vm.callStack)-1]
+		case instSplat:
+			fn := vm.pop().(ValFunc)
+			fn.Mod = token.Splat
+			vm.push(fn)
+		case instRep:
+			fn := vm.pop().(ValFunc)
+			fn.Mod = token.Rep
+			vm.push(fn)
+		case instTruthy:
+			v := vm.pop()
+			vm.push(ValBool(internalTruthy(v)))
+		default:
+			panic(fmt.Sprintf("unhandled instruction %s", i))
 		}
-		vm.push(v)
-	case instPrefixOp:
-		vm.push(evalPrefixOp(i.Kind, vm.pop()))
-	case instInfixOp:
-		vm.push(evalInfixOp(i.Kind, vm.pop(), vm.pop()))
-	case instOutput:
-		vm.output(vm.pop())
-	case instDup:
-		vm.push(vm.stack[len(vm.stack)-1])
-	case instPop:
-		vm.pop()
-	case instSwap:
-		a := vm.pop()
-		b := vm.pop()
-		vm.push(a)
-		vm.push(b)
-	case instJump:
-		vm.jump(i.Target)
-	case instJumpEq:
-		if vm.pop() == i.Value {
-			vm.jump(i.Target)
-		}
-	case instTarget, instFuncDef:
-		// no-op
-	case instDynamicCall:
-		v := vm.pop()
-		if fn, ok := v.(ValFunc); !ok {
-			return fmt.Errorf("cannot call non-function value: %v", v)
-		} else if err := vm.call(fn, i.Arity); err != nil {
-			return err
-		}
-	case instStaticCall:
-		if err := vm.call(i.Func, i.Func.Need()); err != nil {
-			return err
-		}
-	case instReturn:
-		vm.popCallStack()
-	case instSplat:
-		fn := vm.pop().(ValFunc)
-		fn.Mod = token.Splat
-		vm.push(fn)
-	case instRep:
-		fn := vm.pop().(ValFunc)
-		fn.Mod = token.Rep
-		vm.push(fn)
-	case instTruthy:
-		vm.push(ValBool(internalTruthy(vm.pop())))
-	default:
-		panic(fmt.Sprintf("unhandled instruction %s", i))
 	}
 	return nil
 }
@@ -186,26 +190,19 @@ func (vm *VM) executeInstruction() error {
 func (vm *VM) Run(program []Instruction, input Value) error {
 	vm.program = program
 	vm.jmpTab = make(map[string]int)
-	vm.callStack = []stackFrame{{
-		vars: map[string]Value{"input": input},
-		ip:   0,
-	}}
-
 	for ip, inst := range program {
 		switch inst := inst.(type) {
 		case instTarget:
 			vm.jmpTab[inst.Name] = ip + 1
 		case instFuncDef:
 			vm.jmpTab[inst.Name] = ip + 1
-		case instReturn:
-			vm.callStack[0].ip = ip + 1 // main begins after the last function definition
 		}
 	}
-
-	for vm.callStack[len(vm.callStack)-1].ip < len(program) {
-		if err := vm.executeInstruction(); err != nil {
-			return err
-		}
+	mainFrame := vm.newStackFrame(vm.jmpTab["main"])
+	mainFrame.vars["input"] = input
+	err := vm.runFrame(mainFrame)
+	if err != nil {
+		return err
 	}
 	if len(vm.stack) != 0 {
 		panic(fmt.Sprintln("stack not empty at end of program:", vm.stack))
@@ -214,24 +211,10 @@ func (vm *VM) Run(program []Instruction, input Value) error {
 }
 
 func (vm *VM) Call(fn ValFunc, args []Value) Value {
-	fn.Applied = append(fn.Applied[:len(fn.Applied):len(fn.Applied)], args...)
-	if fn.Arity != len(fn.Applied) {
-		panic(fmt.Sprintf("%v: expected %v arguments, got %v", fn.Name, fn.Arity, len(fn.Applied)))
+	if err := vm.call(fn, args); err != nil {
+		panic(err)
 	}
-	if bf, ok := builtins[fn.Name]; ok {
-		return bf.Fn(vm, fn.Applied)
-	} else if t, ok := vm.jmpTab[fn.Name]; ok {
-		for i := len(fn.Applied) - 1; i >= 0; i-- {
-			vm.push(fn.Applied[i])
-		}
-		vm.pushCallStack(t)
-		for len(vm.callStack) > 1 && vm.callStack[len(vm.callStack)-1].ip < len(vm.program) {
-			vm.executeInstruction()
-		}
-		return vm.pop()
-	} else {
-		panic(fmt.Sprintf("undefined function %v", fn.Name))
-	}
+	return vm.pop()
 }
 
 func NewVM(output func(Value)) *VM {

@@ -138,6 +138,14 @@ func init() {
 			},
 		},
 
+		// TODO: should be a macro
+		"first": {
+			Arity: 2,
+			Fn: func(vm *VM, args []Value) Value {
+				return builtins["filter"].Fn(vm, args).(*ValIcicle).get(0)
+			},
+		},
+
 		"ints": makeBuiltinUnary(func(s ValString) ValArray {
 			fs := strings.FieldsFunc(string(s), func(r rune) bool {
 				return !('0' <= r && r <= '9') && r != '-' // 0-9 or -
@@ -262,7 +270,32 @@ func init() {
 				case ValArray:
 					return v[1:]
 				default:
-					panic("invalid argument to len")
+					panic("invalid argument to tail")
+				}
+			},
+		},
+
+		"take": {
+			Arity:    2,
+			Comptime: true,
+			Fn: func(_ *VM, args []Value) Value {
+				n := args[0].(ValInt)
+				switch v := args[1].(type) {
+				case ValString:
+					return v[:n]
+				case ValArray:
+					return v[:n]
+				case *ValIcicle:
+					return &ValIcicle{
+						next: func(i int) Value {
+							if i >= int(n) {
+								return nil
+							}
+							return v.next(i)
+						},
+					}
+				default:
+					panic("invalid argument to take")
 				}
 			},
 		},

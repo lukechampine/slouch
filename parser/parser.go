@@ -59,6 +59,11 @@ func Parse(ts []token.Token) ast.Program {
 	return newParser(ts).parseProgram()
 }
 
+// ParseExpr parses a sequence of tokens as a single expression.
+func ParseExpr(ts []token.Token) ast.Expr {
+	return newParser(ts).parseExpr(precLowest)
+}
+
 // A Parser parses slouch programs.
 type Parser struct {
 	ts []token.Token

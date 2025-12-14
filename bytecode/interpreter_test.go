@@ -2,8 +2,10 @@ package bytecode
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"lukechampine.com/slouch/evaluator"
 	"lukechampine.com/slouch/lexer"
@@ -188,12 +190,6 @@ func TestCases(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-
-		// for _, diff := range c.optDiffs {
-		// 	t.Logf("\n%v:\n%v", diff.desc, diff.patch)
-		// }
-		// t.Fatal(program)
-
 		var output string
 		vm := NewVM(func(v Value) { output += v.String() })
 		if err := vm.Run(program, input); err != nil {
@@ -203,7 +199,7 @@ func TestCases(t *testing.T) {
 				t.Logf("\n%v:\n%v", diff.desc, diff.patch)
 			}
 			t.Log("\nFinal program for " + test.program + ":\n" + program.String())
-			t.Errorf("expected %q, got %q", test.output, output)
+			t.Fatalf("expected %q, got %q", test.output, output)
 		}
 	}
 }
@@ -302,7 +298,7 @@ func TestComptime(t *testing.T) {
 				=x "foobar" + input
 				=y "foo" + "bar" + input
 				=z "f" + "o" + "o" + "b" + "a" + "r" + input
-				x == y
+				x == y and y == z
 			`,
 			`true`,
 		},
@@ -346,11 +342,167 @@ func BenchmarkVM(b *testing.B) {
 
 func BenchmarkAST(b *testing.B) {
 	p := parser.Parse(lexer.Tokenize(fmt.Sprintf(`
-	=isPalindrome { string x == (string x | reverse) }
-	enum 0 %v | count isPalindrome
+	enum 0 %v | map { x / 2 + x * 3 - x %% 4 } | sum
 `, b.N)))
 	e := evaluator.New()
 
 	b.ResetTimer()
 	e.Run(p, "", func(v evaluator.Value) { b.Log(b.N, v) })
+}
+
+func TestAoC(t *testing.T) {
+	tests := []struct {
+		year, day int
+		prog      string
+		exp       string
+	}{
+
+		{
+			year: 2015, day: 1,
+			prog: `
+					=input map (["(":1, ")":-1].)
+					sum
+					scan (+) | takeWhile (>=0) | len + 1
+				 `,
+			exp: `
+					232
+					1783
+				 `,
+		},
+		{
+			year: 2015, day: 2,
+			prog: `
+					=input lines | map ints
+					=wrap choose 2 | map product |: sum*2 + min
+					map wrap | sum
+					=ribbon sort | take 2 | sum * 2
+					=bow product
+					map -:(ribbon + bow) | sum
+				 `,
+			exp: `
+					1588178
+					3783758
+				 `,
+		},
+		{
+
+			year: 2016, day: 3,
+			prog: `
+					=input lines | map ints
+					=validTri perms | all -<{x + y > z}
+					count validTri
+					=input transpose | concat | partition 3
+					count validTri
+				 `,
+			exp: `
+					982
+					1826
+				 `,
+		},
+		{
+			year: 2016, day: 6,
+			prog: `
+					=input lines | transpose | map histogram
+					map maxIndex | concat
+					map minIndex | concat
+				 `,
+			exp: `
+					nabgqlcw
+					ovtrjcjh
+				 `,
+		},
+		{
+			year: 2017, day: 2,
+			prog: `
+					=input lines | map ints
+					map -:(max - min) | sum
+					sumWith (choose 2 | map (sortBy (>)) | first -<(%?) |< (/))
+				 `,
+			exp: `
+					34925
+					221
+				 `,
+		},
+		{
+			year: 2017, day: 4,
+			prog: `
+					=input lines | map words
+					count (dups | len == 0)
+					count (map sort | dups | len == 0)
+				 `,
+			exp: `
+					466
+					251
+				 `,
+		},
+		{
+			year: 2019, day: 1,
+			prog: `
+					=input ints
+					=fuel {x/3 - 2}
+					map fuel | sum
+					=recfuel fuel | iterate fuel | takeWhile (>0) | sum
+					map recfuel | sum
+				 `,
+			exp: `
+					3173518
+					4757427
+				 `,
+		},
+		{
+			year: 2020, day: 1,
+			prog: `
+					input | ints | choose 3 | first (sum == 2020) | product
+				 `,
+			exp: `
+					70276940
+				 `,
+		},
+	}
+
+	for i, test := range tests {
+		if i != len(tests)-1 {
+			continue
+		}
+		input, err := os.ReadFile(fmt.Sprintf("../inputs/%v_day%v.txt", test.year, test.day))
+		if err != nil {
+			t.Error("missing input for", test.year, test.day)
+			continue
+		}
+
+		start := time.Now()
+		c := NewCompiler()
+		program, err := c.Compile(parser.Parse(lexer.Tokenize(test.prog)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		compileTime := time.Since(start)
+
+		for _, diff := range c.optDiffs {
+			t.Logf("\n%v:\n%v", diff.desc, diff.patch)
+		}
+		t.Log("\nFinal program for " + test.prog + ":\n" + program.String())
+
+		var outputLines []string
+		vm := NewVM(func(v Value) { outputLines = append(outputLines, v.String()) })
+		start = time.Now()
+		if err := vm.Run(program, ValString(input)); err != nil {
+			t.Fatal(err)
+		}
+		elapsed := time.Since(start)
+		output := strings.Join(outputLines, "\n")
+		exp := strings.TrimSpace(strings.ReplaceAll(test.exp, "\t", ""))
+		if output != exp {
+			for _, diff := range c.optDiffs {
+				t.Logf("\n%v:\n%v", diff.desc, diff.patch)
+			}
+			t.Log("\nFinal program for " + test.prog + ":\n" + program.String())
+			t.Errorf("output did not match for %v day%v:\nexp:\n%q\ngot:\n%q", test.year, test.day,
+				exp, output)
+			continue
+		}
+		t.Logf("%v day %2v PASS (%2ds %3dms, compile: %2ds %3dms)", test.year, test.day,
+			elapsed/time.Second, (elapsed%time.Second)/time.Millisecond,
+			compileTime/time.Second, (compileTime%time.Second)/time.Millisecond)
+	}
 }

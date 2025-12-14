@@ -47,7 +47,7 @@ func main() {
 	}
 	err = bytecode.NewVM(func(v bytecode.Value) {
 		fmt.Println(renderValue(v, true))
-	}).Run(program, input)
+	}).Run(program, bytecode.ValString(input))
 	if err != nil {
 		panic(err)
 	}
@@ -217,7 +217,7 @@ func execute(pp *ast.Program, input, prog string, w io.Writer, unquote bool) (er
 	}
 	err = bytecode.NewVM(func(v bytecode.Value) {
 		fmt.Fprint(w, "\r"+renderValue(v, unquote))
-	}).Run(program, input)
+	}).Run(program, bytecode.ValString(input))
 	return
 }
 
